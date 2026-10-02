@@ -1,0 +1,3 @@
+#!/usr/bin/env node
+// Executable named like the real CLI, for the filos.claude.path setting. See README.md.
+import('./fake-claude.mjs');

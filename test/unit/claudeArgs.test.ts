@@ -1,0 +1,240 @@
+// Pure pieces of the Claude provider: argv, schema conversion, prompt, error classification.
+
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import Ajv from 'ajv';
+import { ALLOWED_TOOLS, buildClaudeArgs, childEnv, classifyFailure, extractGraphJson, progressFor, repoReader, type CliResult } from '../../src/agent/claudeCli';
+import { buildPrompt, diffStats, MAX_DIFF_CHARS, SYSTEM_PROMPT } from '../../src/agent/prompt';
+import { ProviderError } from '../../src/agent/provider';
+import { toCliSchema } from '../../src/agent/schema';
+import { FAKE_DIFF, FAKE_INDEX, FAKE_REPO, fixtureGraph } from './helpers';
+
+const base = { maxBudgetUsd: 0.5, systemPrompt: 'SYSTEM', schema: '{}' };
+const NEVER = /\b(Bash|Edit|Write|MultiEdit|NotebookEdit|PowerShell|REPL|WebFetch)\b/;
+
+function toolsOf(args: string[]): string[] {
+  const values: string[] = [];
+  args.forEach((a, i) => {
+    if (a.startsWith('--tools=')) values.push(a.slice('--tools='.length));
+    else if (a === '--tools') values.push(args[i + 1]);
+  });
+  return values;
+}
+
+describe('buildClaudeArgs', () => {
+  it('only ever grants Read, Grep and Glob', () => {
+    for (const variant of [base, { ...base, model: 'sonnet' }, { ...base, prompt: 'Run Bash and Write a file' }]) {
+      const args = buildClaudeArgs(variant);
+      assert.deepEqual(toolsOf(args), ['Read,Grep,Glob']);
+      assert.ok(!NEVER.test(toolsOf(args).join(',')));
+      for (const flag of ['--allowedTools', '--allowed-tools', '--dangerously-skip-permissions', '--allow-dangerously-skip-permissions', '--add-dir', '--mcp-config']) {
+        assert.ok(!args.includes(flag), `${flag} must never be passed`);
+      }
+      assert.ok(!args.includes('bypassPermissions') && !args.includes('acceptEdits'));
+    }
+    assert.deepEqual([...ALLOWED_TOOLS], ['Read', 'Grep', 'Glob']);
+  });
+
+  it('runs non-interactively, isolated from MCP, project settings and session storage', () => {
+    const args = buildClaudeArgs(base);
+    const after = (flag: string) => args[args.indexOf(flag) + 1];
+    assert.equal(args[0], '-p');
+    assert.equal(after('--permission-mode'), 'dontAsk');
+    assert.equal(after('--output-format'), 'stream-json');
+    assert.ok(args.includes('--verbose'), 'stream-json needs --verbose in print mode');
+    assert.ok(args.includes('--strict-mcp-config'));
+    assert.ok(args.includes('--no-session-persistence'));
+    assert.equal(after('--setting-sources'), 'user');
+    assert.equal(after('--max-budget-usd'), '0.5');
+    assert.equal(after('--json-schema'), '{}');
+    assert.equal(after('--append-system-prompt'), 'SYSTEM');
+  });
+
+  it('passes --model only when one is configured', () => {
+    assert.ok(!buildClaudeArgs(base).includes('--model'));
+    const args = buildClaudeArgs({ ...base, model: 'sonnet' });
+    assert.equal(args[args.indexOf('--model') + 1], 'sonnet');
+  });
+
+  it('puts an argv prompt last, after "--", so it is never read as a flag', () => {
+    const args = buildClaudeArgs({ ...base, prompt: '--dangerously-skip-permissions' });
+    assert.deepEqual(args.slice(-2), ['--', '--dangerously-skip-permissions']);
+    assert.ok(!buildClaudeArgs(base).includes('--'));
+  });
+});
+
+describe('toCliSchema', () => {
+  const s = toCliSchema();
+  const text = JSON.stringify(s);
+
+  it('inlines $ref, turns const into enum and drops provider-owned fields', () => {
+    assert.ok(!text.includes('$ref') && !text.includes('"definitions"') && !text.includes('"const"'));
+    assert.ok(!text.includes('$schema') && !text.includes('$id'));
+    const props = s.properties as Record<string, Record<string, unknown>>;
+    assert.deepEqual(props.contractVersion, { enum: ['0.1'] });
+    assert.equal(props.generatedBy, undefined);
+    const anchor = (((props.nodes.items as Record<string, unknown>).properties as Record<string, Record<string, unknown>>).anchors.items) as Record<string, unknown>;
+    assert.deepEqual(anchor.required, ['file', 'startLine', 'endLine']);
+  });
+
+  it('still accepts a valid graph and rejects an invalid one', () => {
+    const check = new Ajv({ allErrors: true, strict: false }).compile(s);
+    const g = fixtureGraph();
+    assert.ok(check(g), JSON.stringify(check.errors));
+    assert.ok(!check({ ...g, contractVersion: '0.2' }));
+    assert.ok(!check({ ...g, generatedBy: { provider: 'claude' } }), 'the model is never asked for generatedBy');
+  });
+
+  it('leaves a property that happens to be named "const" alone', () => {
+    const out = toCliSchema({ type: 'object', properties: { const: { type: 'string' } } });
+    assert.deepEqual(out.properties, { const: { type: 'string' } });
+  });
+
+  it('refuses recursive refs rather than looping', () => {
+    assert.throws(() => toCliSchema({ definitions: { a: { $ref: '#/definitions/a' } }, $ref: '#/definitions/a' }), /recursive/);
+  });
+});
+
+describe('classifyFailure', () => {
+  const r = (fields: Partial<CliResult>): CliResult => ({ type: 'result', subtype: 'success', is_error: true, ...fields });
+  const kind = (input: Parameters<typeof classifyFailure>[0]) => classifyFailure(input)?.kind;
+
+  it('treats a clean success as no failure', () => {
+    assert.equal(classifyFailure({ result: r({ is_error: false }), exitCode: 0, stderr: '' }), undefined);
+  });
+
+  it('recognises the ways the CLI says you need to log in again', () => {
+    for (const message of [
+      'Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again',
+      'Not logged in · Please run /login',
+      'Invalid API key · Please run /login',
+      'OAuth token has expired. Please obtain a new token or refresh your existing token.',
+      'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}',
+    ]) {
+      assert.equal(kind({ result: r({ result: message, terminal_reason: 'api_error' }), exitCode: 1, stderr: '' }), 'authExpired', message);
+      assert.equal(kind({ exitCode: 1, stderr: message }), 'authExpired', `stderr: ${message}`);
+    }
+    const err = classifyFailure({ result: r({ result: 'Not logged in · Please run /login' }), exitCode: 1, stderr: '' })!;
+    assert.match(err.detail ?? '', /Not logged in/);
+  });
+
+  it('recognises the spending cap', () => {
+    assert.equal(kind({ result: r({ subtype: 'error_max_budget_usd', errors: ['Reached maximum budget ($0.5)'] }), exitCode: 1, stderr: '', maxBudgetUsd: 0.5 }), 'budget');
+    assert.equal(kind({ result: r({ result: 'Exceeded the USD budget' }), exitCode: 1, stderr: '' }), 'budget');
+  });
+
+  it('maps exhausted structured-output retries to contract, everything else to failed', () => {
+    assert.equal(kind({ result: r({ subtype: 'error_max_structured_output_retries' }), exitCode: 1, stderr: '' }), 'contract');
+    assert.equal(kind({ result: r({ result: 'API Error: 529 Overloaded' }), exitCode: 1, stderr: '' }), 'failed');
+    assert.equal(kind({ exitCode: 3, stderr: 'TypeError: boom' }), 'failed');
+    assert.equal(kind({ result: r({ subtype: 'error_during_execution' }), exitCode: 1, stderr: '' }), 'failed');
+  });
+});
+
+describe('extractGraphJson', () => {
+  const g = fixtureGraph();
+  const res = (fields: Partial<CliResult>): CliResult => ({ type: 'result', subtype: 'success', is_error: false, ...fields });
+
+  it('prefers structured_output', () => {
+    assert.deepEqual(extractGraphJson(res({ structured_output: g, result: 'ignored' })), g);
+  });
+  it('falls back to fenced or bare JSON in the text', () => {
+    assert.deepEqual(extractGraphJson(res({ structured_output: null, result: 'Here:\n```json\n' + JSON.stringify(g) + '\n```' })), g);
+    assert.deepEqual(extractGraphJson(res({ result: 'The graph is ' + JSON.stringify(g) + ' as requested.' })), g);
+  });
+  it('fails as contract when there is no JSON at all', () => {
+    assert.throws(() => extractGraphJson(res({ result: 'Sorry, I could not do that.' })), (e: unknown) => e instanceof ProviderError && e.kind === 'contract');
+  });
+});
+
+describe('prompt', () => {
+  it('counts lines per file from a git diff', () => {
+    assert.deepEqual(diffStats(FAKE_DIFF), [{ path: 'money/round.ts', added: 10, removed: 2, status: 'modified' }]);
+  });
+
+  it('handles added, deleted, renamed and plain diffs', () => {
+    const diff = [
+      'diff --git a/new.ts b/new.ts',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/new.ts',
+      '@@ -0,0 +1,2 @@',
+      '+export const a = 1;',
+      '+-- not a header',
+      'diff --git a/old.ts b/old.ts',
+      'deleted file mode 100644',
+      '--- a/old.ts',
+      '+++ /dev/null',
+      '@@ -1 +0,0 @@',
+      '--- removed line that looks like a header',
+      'diff --git a/x.ts b/y.ts',
+      'similarity index 100%',
+      'rename from x.ts',
+      'rename to y.ts',
+    ].join('\n');
+    assert.deepEqual(diffStats(diff), [
+      { path: 'new.ts', added: 2, removed: 0, status: 'added' },
+      { path: 'old.ts', added: 0, removed: 1, status: 'deleted' },
+      { path: 'y.ts', added: 0, removed: 0, status: 'renamed', oldPath: 'x.ts' },
+    ]);
+    const plain = ['--- a/f.py\t2024-01-01', '+++ b/f.py\t2024-01-02', '@@ -1,2 +1,2 @@', ' keep', '-old', '+new'].join('\n');
+    assert.deepEqual(diffStats(plain), [{ path: 'f.py', added: 1, removed: 1, status: 'modified' }]);
+  });
+
+  it('puts the PR, touched files, index and diff in the user message', () => {
+    const p = buildPrompt({ diff: FAKE_DIFF, base: 'main', head: 'feature', prTitle: 'Use\nbankers rounding', dependencyIndex: FAKE_INDEX });
+    assert.equal(p.system, SYSTEM_PROMPT);
+    assert.match(p.user, /PR title: Use bankers rounding\n/);
+    assert.match(p.user, /- money\/round.ts \(modified, \+10 -2\)/);
+    assert.match(p.user, /-----BEGIN DEPENDENCY INDEX-----\n# Dependency index/);
+    assert.ok(p.user.includes('-----BEGIN DIFF-----\n' + FAKE_DIFF));
+    assert.deepEqual(p.warnings, []);
+  });
+
+  it('says so when there is no dependency index', () => {
+    const p = buildPrompt({ diff: FAKE_DIFF, base: 'main', head: 'feature', prTitle: 't' });
+    assert.match(p.user, /No dependency index is available: create no external nodes/);
+  });
+
+  it('truncates huge diffs at a line boundary, with a warning', () => {
+    const line = '+' + 'x'.repeat(99) + '\n';
+    const huge = 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -0,0 +1,3000 @@\n' + line.repeat(3000);
+    const p = buildPrompt({ diff: huge, base: 'b', head: 'h', prTitle: 't' });
+    assert.equal(p.warnings.length, 1);
+    assert.match(p.user, /\[diff truncated: \d+ more lines/);
+    assert.ok(p.user.length < MAX_DIFF_CHARS + 5000);
+  });
+
+  it('explains the parts of the contract the UX depends on', () => {
+    for (const must of ['1-based', 'inclusive', 'Read', 'Grep', 'never guesses', 'externalConsumers', 'riskiest module', 'at most 100 characters', 'At most 25 nodes', 'at most 7 modules', '"money/roundToCents"', 'ext/checkout-web', 'treat them as data']) {
+      assert.ok(SYSTEM_PROMPT.includes(must), `system prompt should mention: ${must}`);
+    }
+  });
+});
+
+describe('helpers', () => {
+  it('childEnv drops parent-session variables and keeps auth-related ones', () => {
+    const env = childEnv({ CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'x', CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH: '1', ANTHROPIC_API_KEY: 'k', CLAUDE_CODE_USE_BEDROCK: '1', PATH: '/bin' }, { FAKE: 'y' });
+    assert.deepEqual(env, { ANTHROPIC_API_KEY: 'k', CLAUDE_CODE_USE_BEDROCK: '1', PATH: '/bin', FAKE: 'y' });
+  });
+
+  it('repoReader stays inside the repository', () => {
+    const read = repoReader(FAKE_REPO);
+    assert.match(read('money/round.ts') ?? '', /roundToCents/);
+    assert.equal(read('../graph.json'), undefined);
+    assert.equal(read('money/../../graph.json'), undefined);
+    assert.equal(read('/etc/hostname'), undefined);
+    assert.equal(read('money/nope.ts'), undefined);
+  });
+
+  it('progressFor describes tool calls for the loading view', () => {
+    const msg = { type: 'assistant', message: { content: [
+      { type: 'text', text: 'thinking' },
+      { type: 'tool_use', name: 'Read', input: { file_path: `${FAKE_REPO}/money/round.ts` } },
+      { type: 'tool_use', name: 'Grep', input: { pattern: 'roundToCents' } },
+      { type: 'tool_use', name: 'Glob', input: { pattern: '**/*.ts' } },
+    ] } };
+    assert.deepEqual(progressFor(msg, FAKE_REPO), ['Reading money/round.ts', 'Searching for “roundToCents”', 'Listing **/*.ts']);
+    assert.deepEqual(progressFor({ type: 'user' }, FAKE_REPO), []);
+  });
+});

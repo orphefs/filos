@@ -1,0 +1,5 @@
+# Dependency index for the fake-claude fixture repo (provisional format: the real spec is still open).
+# symbol | consumers | producers   (consumers prefixed "ext:" live outside this repo)
+money/round.ts#roundToCents | checkout/total.ts#orderTotal, money/round.ts#formatCents, ext:invoice-service | -
+money/round.ts#formatCents | ext:storefront-web | money/round.ts#roundToCents
+checkout/total.ts#orderTotal | - | money/round.ts#roundToCents

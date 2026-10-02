@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "repo": "acme/ledger",
+  "builtAt": "2026-09-30T16:42:00Z",
+  "builtBy": "filos-index skill 0.1",
+  "ref": "feature/bankers-rounding",
+  "scannedRepos": ["acme/checkout-web", "acme/payouts-service", "acme/reporting", "acme/mobile-app"],
+  "symbols": [
+    {
+      "symbol": "src/money/round.ts#roundToCents",
+      "kind": "function",
+      "consumers": [
+        { "path": "src/money/money.ts", "line": 37, "symbol": "Money.multiply", "kind": "call" },
+        { "path": "src/index.ts", "line": 2, "kind": "import" },
+        { "repo": "acme/checkout-web", "path": "src/cart/totals.ts", "line": 41, "symbol": "cartTotal", "kind": "call" },
+        { "repo": "acme/payouts-service", "path": "src/payouts/fees.ts", "line": 18, "symbol": "platformFee", "kind": "call" },
+        { "repo": "acme/reporting", "path": "src/revenue/daily.ts", "line": 57, "symbol": "dailyRevenue", "kind": "call" }
+      ],
+      "producers": []
+    },
+    {
+      "symbol": "src/money/round.ts#RoundingMode",
+      "kind": "type",
+      "consumers": [
+        { "path": "src/money/money.ts", "line": 1, "kind": "import" },
+        { "path": "src/index.ts", "line": 2, "kind": "import" }
+      ],
+      "producers": []
+    },
+    {
+      "symbol": "src/money/money.ts#Money.multiply",
+      "kind": "method",
+      "consumers": [
+        { "path": "src/invoice/invoice.ts", "line": 40, "symbol": "Invoice.subtotal", "kind": "call" },
+        { "path": "src/invoice/invoice.ts", "line": 70, "symbol": "Invoice.netByCategory", "kind": "call" },
+        { "path": "src/invoice/discount.ts", "line": 27, "symbol": "applyDiscount", "kind": "call" },
+        { "path": "src/tax/vat.ts", "line": 35, "symbol": "computeVat", "kind": "call" },
+        { "repo": "acme/checkout-web", "path": "src/cart/totals.ts", "line": 28, "symbol": "lineTotal", "kind": "call" }
+      ],
+      "producers": [
+        { "path": "src/money/round.ts", "line": 18, "symbol": "roundToCents", "kind": "call" }
+      ]
+    },
+    {
+      "symbol": "src/money/money.ts#Money.allocate",
+      "kind": "method",
+      "consumers": [
+        { "path": "src/invoice/invoice.ts", "line": 53, "symbol": "Invoice.total", "kind": "call" }
+      ],
+      "producers": []
+    },
+    {
+      "symbol": "src/invoice/invoice.ts#Invoice.subtotal",
+      "kind": "method",
+      "consumers": [
+        { "path": "src/invoice/discount.ts", "line": 24, "symbol": "applyDiscount", "kind": "call" }
+      ],
+      "producers": [
+        { "path": "src/money/money.ts", "line": 36, "symbol": "Money.multiply", "kind": "call" }
+      ]
+    },
+    {
+      "symbol": "src/invoice/invoice.ts#Invoice.total",
+      "kind": "method",
+      "consumers": [
+        { "path": "src/api/handlers.ts", "line": 55, "symbol": "createInvoiceHandler", "kind": "call" }
+      ],
+      "producers": [
+        { "path": "src/invoice/invoice.ts", "line": 66, "symbol": "Invoice.netByCategory", "kind": "call" },
+        { "path": "src/invoice/discount.ts", "line": 23, "symbol": "applyDiscount", "kind": "call" },
+        { "path": "src/money/money.ts", "line": 44, "symbol": "Money.allocate", "kind": "call" },
+        { "path": "src/tax/vat.ts", "line": 34, "symbol": "computeVat", "kind": "call" }
+      ]
+    },
+    {
+      "symbol": "src/invoice/discount.ts#applyDiscount",
+      "kind": "function",
+      "consumers": [
+        { "path": "src/invoice/invoice.ts", "line": 50, "symbol": "Invoice.total", "kind": "call" },
+        { "path": "src/index.ts", "line": 5, "kind": "import" }
+      ],
+      "producers": [
+        { "path": "src/invoice/invoice.ts", "line": 39, "symbol": "Invoice.subtotal", "kind": "call" },
+        { "path": "src/money/money.ts", "line": 36, "symbol": "Money.multiply", "kind": "call" }
+      ]
+    },
+    {
+      "symbol": "src/invoice/discount.ts#findDiscount",
+      "kind": "function",
+      "consumers": [
+        { "path": "src/api/handlers.ts", "line": 37, "symbol": "createInvoiceHandler", "kind": "call" },
+        { "path": "src/index.ts", "line": 5, "kind": "import" }
+      ],
+      "producers": []
+    },
+    {
+      "symbol": "src/tax/vat.ts#vatRate",
+      "kind": "function",
+      "consumers": [
+        { "path": "src/tax/vat.ts", "line": 35, "symbol": "computeVat", "kind": "call" },
+        { "path": "src/index.ts", "line": 6, "kind": "import" }
+      ],
+      "producers": []
+    },
+    {
+      "symbol": "src/tax/vat.ts#computeVat",
+      "kind": "function",
+      "consumers": [
+        { "path": "src/invoice/invoice.ts", "line": 61, "symbol": "Invoice.total", "kind": "call" },
+        { "path": "src/index.ts", "line": 6, "kind": "import" }
+      ],
+      "producers": [
+        { "path": "src/tax/vat.ts", "line": 28, "symbol": "vatRate", "kind": "call" },
+        { "path": "src/money/money.ts", "line": 36, "symbol": "Money.multiply", "kind": "call" }
+      ]
+    },
+    {
+      "symbol": "src/api/handlers.ts#createInvoiceHandler",
+      "kind": "function",
+      "consumers": [
+        { "path": "src/index.ts", "line": 7, "kind": "import" },
+        { "repo": "acme/mobile-app", "path": "src/api/invoices.ts", "line": 23, "symbol": "submitInvoice", "kind": "http", "detail": "POST /invoices" }
+      ],
+      "producers": [
+        { "path": "src/invoice/discount.ts", "line": 17, "symbol": "findDiscount", "kind": "call" },
+        { "path": "src/invoice/invoice.ts", "line": 48, "symbol": "Invoice.total", "kind": "call" }
+      ]
+    }
+  ]
+}

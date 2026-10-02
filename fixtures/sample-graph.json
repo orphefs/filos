@@ -1,0 +1,486 @@
+{
+  "contractVersion": "0.1",
+  "pr": {
+    "title": "Switch to banker's rounding and add invoice discounts",
+    "base": "main",
+    "head": "feature/bankers-rounding",
+    "author": "dana"
+  },
+  "orientation": "Touches four modules. The risky one is money: roundToCents now rounds ties to the even cent (banker's rounding), a silent behaviour change in a public function that three other repos call. Invoice totals also move: VAT is rounded once per rate instead of per line, and the new discount path has no tests.",
+  "nodes": [
+    {
+      "id": "money",
+      "label": "money",
+      "kind": "module",
+      "change": "modified",
+      "risk": {
+        "signals": { "linesChanged": 25 },
+        "judgement": 0.9,
+        "why": "Holds roundToCents, the riskiest change in this PR."
+      },
+      "summary": "Where fractional cents become whole ones. This PR changes the default rounding for every caller and threads a rounding mode through Money.multiply, so anything that multiplies money (VAT, discounts, three other repos) can move by a cent on a tie. Start here.",
+      "anchors": [
+        { "file": "src/money/round.ts", "startLine": 18, "endLine": 30, "symbol": "roundToCents" },
+        { "file": "src/money/money.ts", "startLine": 36, "endLine": 38, "symbol": "Money.multiply" }
+      ]
+    },
+    {
+      "id": "money/roundToCents",
+      "label": "roundToCents()",
+      "kind": "function",
+      "parent": "money",
+      "change": "modified",
+      "risk": {
+        "signals": {
+          "externalConsumers": 3,
+          "internalFanOut": 1,
+          "publicApi": true,
+          "hasTests": true,
+          "testsChanged": true,
+          "linesChanged": 19,
+          "behaviourChange": true
+        },
+        "judgement": 0.9,
+        "why": "The default behaviour of a public function changes, and three other repos call it."
+      },
+      "summary": "Ties now round to the even cent instead of away from zero: 12.5 cents becomes 12, not 13, so VAT on a €1.50 line in Germany drops from 29 to 28 cents. A new optional mode argument ('half-up') restores the old behaviour. Three other repos call this function and will change silently when they upgrade: check whether they should pin 'half-up', and whether changing a public default needs a major version.",
+      "anchors": [
+        { "file": "src/money/round.ts", "startLine": 18, "endLine": 30, "symbol": "roundToCents" },
+        { "file": "src/money/round.ts", "startLine": 9, "endLine": 9, "symbol": "RoundingMode" },
+        { "file": "test/round.test.ts", "startLine": 15, "endLine": 29 }
+      ]
+    },
+    {
+      "id": "money/Money.multiply",
+      "label": "Money.multiply()",
+      "kind": "function",
+      "parent": "money",
+      "change": "modified",
+      "risk": {
+        "signals": {
+          "externalConsumers": 1,
+          "internalFanOut": 4,
+          "publicApi": true,
+          "hasTests": true,
+          "testsChanged": false,
+          "linesChanged": 4,
+          "behaviourChange": false
+        },
+        "judgement": 0.3,
+        "why": "A small pass-through diff, but checkout-web calls it and its results change on ties."
+      },
+      "summary": "Now takes an optional rounding mode and passes it on to roundToCents; when it is omitted, the new half-even default applies. The code change is mechanical, but every caller inherits the new rounding: VAT, percentage discounts and checkout-web. Check that none of them relied on ties rounding up.",
+      "anchors": [
+        { "file": "src/money/money.ts", "startLine": 36, "endLine": 38, "symbol": "Money.multiply" }
+      ]
+    },
+    {
+      "id": "money/Money.allocate",
+      "label": "Money.allocate()",
+      "kind": "function",
+      "parent": "money",
+      "change": "context",
+      "risk": {
+        "signals": {
+          "externalConsumers": 0,
+          "internalFanOut": 1,
+          "publicApi": true,
+          "hasTests": false,
+          "linesChanged": 0
+        },
+        "judgement": 0.2,
+        "why": "Unchanged, but untested code is now on the discount path."
+      },
+      "summary": "Unchanged. Splits an amount into parts proportional to a list of ratios without losing a cent, handing leftover cents to the first parts. Invoice.total now uses it to spread a discount across VAT rates, and no test covers it.",
+      "anchors": [
+        { "file": "src/money/money.ts", "startLine": 44, "endLine": 51, "symbol": "Money.allocate" }
+      ]
+    },
+    {
+      "id": "invoice",
+      "label": "invoice",
+      "kind": "module",
+      "change": "modified",
+      "risk": {
+        "signals": { "linesChanged": 64 },
+        "judgement": 0.6,
+        "why": "Changes how totals are computed and adds new, untested money logic."
+      },
+      "summary": "Two changes: Invoice.total rounds VAT once per rate on the whole invoice instead of per line, and a new discount.ts adds promotion codes. Both change the amounts customers are charged. The existing invoice tests still pass, but none of them would catch either change.",
+      "anchors": [
+        { "file": "src/invoice/invoice.ts", "startLine": 48, "endLine": 64, "symbol": "Invoice.total" },
+        { "file": "src/invoice/discount.ts", "startLine": 23, "endLine": 30, "symbol": "applyDiscount" },
+        { "file": "src/invoice/discount.ts", "startLine": 17, "endLine": 20, "symbol": "findDiscount" }
+      ]
+    },
+    {
+      "id": "invoice/Invoice.total",
+      "label": "Invoice.total()",
+      "kind": "function",
+      "parent": "invoice",
+      "change": "modified",
+      "risk": {
+        "signals": {
+          "externalConsumers": 0,
+          "internalFanOut": 1,
+          "publicApi": true,
+          "hasTests": true,
+          "testsChanged": false,
+          "linesChanged": 33,
+          "behaviourChange": true
+        },
+        "judgement": 0.7,
+        "why": "Changes the totals customers are charged, and no test covers the new rounding."
+      },
+      "summary": "VAT is now rounded once per VAT rate across the whole invoice instead of on every line, and an optional discount code is taken off before VAT. Totals can shift by a few cents on long invoices: two €1.50 lines in Germany used to carry 29 + 29 cents of VAT, now 57. invoice.test.ts was not updated and its cases give the same result under both rules, so nothing pins the new behaviour. The returned totals also gain a discount field.",
+      "anchors": [
+        { "file": "src/invoice/invoice.ts", "startLine": 48, "endLine": 64, "symbol": "Invoice.total" },
+        { "file": "src/invoice/invoice.ts", "startLine": 66, "endLine": 74, "symbol": "Invoice.netByCategory" },
+        { "file": "src/invoice/invoice.ts", "startLine": 12, "endLine": 17, "symbol": "InvoiceTotals" }
+      ]
+    },
+    {
+      "id": "invoice/applyDiscount",
+      "label": "applyDiscount()",
+      "kind": "function",
+      "parent": "invoice",
+      "change": "added",
+      "risk": {
+        "signals": {
+          "externalConsumers": 0,
+          "internalFanOut": 1,
+          "publicApi": true,
+          "hasTests": false,
+          "linesChanged": 17,
+          "behaviourChange": false
+        },
+        "judgement": 0.6,
+        "why": "New money arithmetic with no tests."
+      },
+      "summary": "New: turns a discount code into an amount off the net subtotal, capped at the subtotal. Percentage codes go through Money.multiply, so half-even rounding applies (25% of €10.02 is €2.50, not €2.51). Fixed codes are a bare number of cents with no currency, so FIVEOFF takes 500 pence off a GBP invoice and 500 cents off a EUR one. No test exercises this function.",
+      "anchors": [
+        { "file": "src/invoice/discount.ts", "startLine": 23, "endLine": 30, "symbol": "applyDiscount" },
+        { "file": "src/invoice/discount.ts", "startLine": 5, "endLine": 7, "symbol": "DiscountCode" }
+      ]
+    },
+    {
+      "id": "invoice/findDiscount",
+      "label": "findDiscount()",
+      "kind": "function",
+      "parent": "invoice",
+      "change": "added",
+      "risk": {
+        "signals": {
+          "externalConsumers": 0,
+          "internalFanOut": 1,
+          "publicApi": true,
+          "hasTests": true,
+          "testsChanged": true,
+          "linesChanged": 13,
+          "behaviourChange": false
+        },
+        "judgement": 0.2,
+        "why": "A simple lookup, tested for the unknown-code case."
+      },
+      "summary": "New. Looks up one of three hard-coded promotion codes, ignoring case and surrounding spaces. Because the codes live in source, changing a promotion means shipping a release. Only the unknown-code path is tested, through the handler.",
+      "anchors": [
+        { "file": "src/invoice/discount.ts", "startLine": 17, "endLine": 20, "symbol": "findDiscount" },
+        { "file": "src/invoice/discount.ts", "startLine": 10, "endLine": 14, "symbol": "ACTIVE_CODES" }
+      ]
+    },
+    {
+      "id": "tax",
+      "label": "tax",
+      "kind": "module",
+      "change": "modified",
+      "risk": {
+        "signals": { "linesChanged": 9 },
+        "judgement": 0.2,
+        "why": "Additive and covered by updated tests."
+      },
+      "summary": "Adds an 'ebook' VAT category with reduced rates for Germany (7%) and France (5.5%); other countries fall back to their standard rate. The change is contained and tested.",
+      "anchors": [
+        { "file": "src/tax/vat.ts", "startLine": 28, "endLine": 31, "symbol": "vatRate" }
+      ]
+    },
+    {
+      "id": "tax/vatRate",
+      "label": "vatRate()",
+      "kind": "function",
+      "parent": "tax",
+      "change": "modified",
+      "risk": {
+        "signals": {
+          "externalConsumers": 0,
+          "internalFanOut": 1,
+          "publicApi": true,
+          "hasTests": true,
+          "testsChanged": true,
+          "linesChanged": 9,
+          "behaviourChange": false
+        },
+        "judgement": 0.25,
+        "why": "Additive and tested: only the new 'ebook' input behaves differently."
+      },
+      "summary": "Gains an 'ebook' category: 7% in Germany and 5.5% in France via a new EBOOK_RATES table, otherwise the country's standard rate. Existing categories are unchanged, and new tests pin both the reduced rates and the fallback. Worth asking whether standard is really the right rate for e-books in GB and NL, or just a default nobody chose.",
+      "anchors": [
+        { "file": "src/tax/vat.ts", "startLine": 28, "endLine": 31, "symbol": "vatRate" },
+        { "file": "src/tax/vat.ts", "startLine": 18, "endLine": 18, "symbol": "EBOOK_RATES" },
+        { "file": "src/tax/vat.ts", "startLine": 5, "endLine": 5, "symbol": "VAT_CATEGORIES" },
+        { "file": "test/vat.test.ts", "startLine": 17, "endLine": 24 }
+      ]
+    },
+    {
+      "id": "tax/computeVat",
+      "label": "computeVat()",
+      "kind": "function",
+      "parent": "tax",
+      "change": "context",
+      "risk": {
+        "signals": {
+          "externalConsumers": 0,
+          "internalFanOut": 1,
+          "publicApi": true,
+          "hasTests": true,
+          "testsChanged": false,
+          "linesChanged": 0
+        },
+        "judgement": 0.15,
+        "why": "Unchanged; it passes the rounding change through to VAT."
+      },
+      "summary": "Unchanged. Multiplies a net amount by the rate from vatRate and rounds through Money.multiply. It is the bridge from invoices to roundToCents, which is why VAT picks up half-even rounding without this file changing.",
+      "anchors": [
+        { "file": "src/tax/vat.ts", "startLine": 34, "endLine": 36, "symbol": "computeVat" }
+      ]
+    },
+    {
+      "id": "api",
+      "label": "api",
+      "kind": "module",
+      "change": "modified",
+      "risk": {
+        "signals": { "linesChanged": 9 },
+        "judgement": 0.1,
+        "why": "A small additive change behind an endpoint another repo calls."
+      },
+      "summary": "POST /invoices accepts an optional discountCode and now returns a discount field with its totals. The mobile app calls this endpoint.",
+      "anchors": [
+        { "file": "src/api/handlers.ts", "startLine": 30, "endLine": 56, "symbol": "createInvoiceHandler" }
+      ]
+    },
+    {
+      "id": "api/createInvoiceHandler",
+      "label": "createInvoiceHandler()",
+      "kind": "function",
+      "parent": "api",
+      "change": "modified",
+      "risk": {
+        "signals": {
+          "externalConsumers": 1,
+          "internalFanOut": 0,
+          "publicApi": true,
+          "hasTests": true,
+          "testsChanged": true,
+          "linesChanged": 9,
+          "behaviourChange": false
+        },
+        "judgement": 0.05,
+        "why": "Additive and tested, but mobile-app reads its response."
+      },
+      "summary": "Accepts an optional discountCode: unknown codes get a 400, known ones are passed to Invoice.total. The JSON response now always includes a discount field (0.00 when no code is given). mobile-app calls this endpoint, so check that its response parsing tolerates the new field and that the totals it displays still match the server's after the rounding changes.",
+      "anchors": [
+        { "file": "src/api/handlers.ts", "startLine": 30, "endLine": 56, "symbol": "createInvoiceHandler" },
+        { "file": "src/api/handlers.ts", "startLine": 15, "endLine": 20, "symbol": "InvoiceBody" },
+        { "file": "test/handlers.test.ts", "startLine": 11, "endLine": 20 },
+        { "file": "test/handlers.test.ts", "startLine": 31, "endLine": 33 }
+      ]
+    },
+    {
+      "id": "ext/checkout-web",
+      "label": "acme/checkout-web",
+      "kind": "external",
+      "change": "context",
+      "risk": {
+        "signals": {},
+        "why": "Calls two symbols whose rounding changes."
+      },
+      "summary": "Calls roundToCents and Money.multiply in src/cart/totals.ts to price the cart. After upgrading, cart totals change on half-cent ties unless it pins 'half-up', and they can disagree with invoices if the two upgrade at different times.",
+      "anchors": []
+    },
+    {
+      "id": "ext/payouts-service",
+      "label": "acme/payouts-service",
+      "kind": "external",
+      "change": "context",
+      "risk": {
+        "signals": {},
+        "why": "Calls roundToCents."
+      },
+      "summary": "Calls roundToCents in src/payouts/fees.ts to compute fees. Fees change on ties after upgrading; check whether payouts have to match amounts already reported to partners.",
+      "anchors": []
+    },
+    {
+      "id": "ext/reporting",
+      "label": "acme/reporting",
+      "kind": "external",
+      "change": "context",
+      "risk": {
+        "signals": {},
+        "why": "Calls roundToCents."
+      },
+      "summary": "Calls roundToCents in src/revenue/daily.ts to total daily revenue. The same day's figures can differ by a cent before and after the upgrade, which matters if reports are reconciled against older exports.",
+      "anchors": []
+    },
+    {
+      "id": "ext/mobile-app",
+      "label": "acme/mobile-app",
+      "kind": "external",
+      "change": "context",
+      "risk": {
+        "signals": {},
+        "why": "Calls the invoice endpoint over HTTP."
+      },
+      "summary": "Calls POST /invoices from src/api/invoices.ts. The response gains a discount field and totals can shift by a cent; it is unaffected only if its JSON decoding ignores unknown fields.",
+      "anchors": []
+    }
+  ],
+  "edges": [
+    { "from": "money/Money.multiply", "to": "money/roundToCents", "kind": "calls", "label": "rounds the product" },
+    { "from": "tax/computeVat", "to": "money/Money.multiply", "kind": "calls", "label": "net × rate" },
+    { "from": "tax/computeVat", "to": "tax/vatRate", "kind": "calls", "label": "looks up the rate" },
+    { "from": "invoice/Invoice.total", "to": "tax/computeVat", "kind": "calls", "label": "once per VAT rate" },
+    { "from": "invoice/Invoice.total", "to": "invoice/applyDiscount", "kind": "calls", "label": "if a code is given" },
+    { "from": "invoice/Invoice.total", "to": "money/Money.allocate", "kind": "calls", "label": "spreads the discount" },
+    { "from": "invoice/applyDiscount", "to": "money/Money.multiply", "kind": "calls", "label": "percentage codes" },
+    { "from": "api/createInvoiceHandler", "to": "invoice/findDiscount", "kind": "calls", "label": "validates discountCode" },
+    { "from": "api/createInvoiceHandler", "to": "invoice/Invoice.total", "kind": "calls", "label": "builds the response" },
+    { "from": "ext/checkout-web", "to": "money/roundToCents", "kind": "consumes", "label": "src/cart/totals.ts" },
+    { "from": "ext/checkout-web", "to": "money/Money.multiply", "kind": "consumes", "label": "src/cart/totals.ts" },
+    { "from": "ext/payouts-service", "to": "money/roundToCents", "kind": "consumes", "label": "src/payouts/fees.ts" },
+    { "from": "ext/reporting", "to": "money/roundToCents", "kind": "consumes", "label": "src/revenue/daily.ts" },
+    { "from": "ext/mobile-app", "to": "api/createInvoiceHandler", "kind": "consumes", "label": "HTTP POST /invoices" }
+  ],
+  "files": [
+    {
+      "path": "src/index.ts",
+      "regions": [
+        { "startLine": 2, "endLine": 3, "gist": "re-exports roundToCents, RoundingMode, Money and isCurrency from money/" },
+        { "startLine": 4, "endLine": 5, "gist": "re-exports Invoice and the discount functions from invoice/" },
+        { "startLine": 6, "endLine": 7, "gist": "re-exports the VAT helpers and createInvoiceHandler from tax/ and api/" }
+      ]
+    },
+    {
+      "path": "src/money/round.ts",
+      "regions": [
+        { "startLine": 9, "endLine": 9, "symbol": "RoundingMode", "gist": "the two rounding modes: 'half-up' (old behaviour) and 'half-even' (new default)" },
+        { "startLine": 12, "endLine": 12, "symbol": "EPSILON", "gist": "tolerance so float noise like 100.49999999999999 still counts as a tie" },
+        { "startLine": 18, "endLine": 30, "symbol": "roundToCents", "gist": "rounds fractional cents to whole cents; ties go to the even cent unless mode is 'half-up'" }
+      ]
+    },
+    {
+      "path": "src/money/money.ts",
+      "regions": [
+        { "startLine": 1, "endLine": 1, "gist": "imports roundToCents and the RoundingMode type" },
+        { "startLine": 3, "endLine": 3, "symbol": "Currency", "gist": "the supported currencies: EUR, GBP, USD" },
+        { "startLine": 5, "endLine": 7, "symbol": "isCurrency", "gist": "type guard: is a value one of the supported currency codes" },
+        { "startLine": 10, "endLine": 62, "symbol": "Money", "gist": "immutable amount in integer cents plus a currency; arithmetic stays in whole cents" },
+        { "startLine": 11, "endLine": 14, "symbol": "Money.constructor", "gist": "private: stores cents and currency; callers use Money.of or Money.zero" },
+        { "startLine": 16, "endLine": 19, "symbol": "Money.of", "gist": "creates Money from whole cents; throws on fractions" },
+        { "startLine": 21, "endLine": 23, "symbol": "Money.zero", "gist": "zero in the given currency" },
+        { "startLine": 25, "endLine": 28, "symbol": "Money.add", "gist": "adds two amounts in the same currency" },
+        { "startLine": 30, "endLine": 33, "symbol": "Money.subtract", "gist": "subtracts an amount in the same currency" },
+        { "startLine": 36, "endLine": 38, "symbol": "Money.multiply", "gist": "scales by a factor and rounds with roundToCents (half-even unless a mode is given)" },
+        { "startLine": 44, "endLine": 51, "symbol": "Money.allocate", "gist": "splits into proportional parts without losing a cent; leftovers go to the first parts" },
+        { "startLine": 53, "endLine": 55, "symbol": "Money.toJSON", "gist": "serialises as { amount: '12.34', currency }" },
+        { "startLine": 57, "endLine": 61, "symbol": "Money.assertSameCurrency", "gist": "throws a TypeError when two currencies differ" }
+      ]
+    },
+    {
+      "path": "src/invoice/invoice.ts",
+      "regions": [
+        { "startLine": 1, "endLine": 3, "gist": "imports Money, computeVat and the new applyDiscount" },
+        { "startLine": 5, "endLine": 10, "symbol": "InvoiceLine", "gist": "one line: description, unit price, quantity, optional VAT category" },
+        { "startLine": 12, "endLine": 17, "symbol": "InvoiceTotals", "gist": "what total() returns: net, discount, VAT and gross" },
+        { "startLine": 19, "endLine": 75, "symbol": "Invoice", "gist": "an invoice in one currency for one country: collects lines and computes totals" },
+        { "startLine": 22, "endLine": 25, "symbol": "Invoice.constructor", "gist": "fixes the invoice's currency and country" },
+        { "startLine": 27, "endLine": 36, "symbol": "Invoice.addLine", "gist": "adds a line; rejects other currencies and non-whole quantities" },
+        { "startLine": 39, "endLine": 41, "symbol": "Invoice.subtotal", "gist": "sums unit price × quantity over all lines, before any discount" },
+        { "startLine": 48, "endLine": 64, "symbol": "Invoice.total", "gist": "groups lines by VAT rate, spreads the discount, rounds VAT once per rate" },
+        { "startLine": 66, "endLine": 74, "symbol": "Invoice.netByCategory", "gist": "sums line nets per VAT category" }
+      ]
+    },
+    {
+      "path": "src/invoice/discount.ts",
+      "regions": [
+        { "startLine": 1, "endLine": 2, "gist": "imports Money and the Invoice type" },
+        { "startLine": 5, "endLine": 7, "symbol": "DiscountCode", "gist": "a promotion: a percentage off, or a fixed number of cents off (no currency)" },
+        { "startLine": 10, "endLine": 14, "symbol": "ACTIVE_CODES", "gist": "the live codes: WELCOME10 (10%), SPRING25 (25%), FIVEOFF (500 cents)" },
+        { "startLine": 17, "endLine": 20, "symbol": "findDiscount", "gist": "finds an active code, ignoring case and surrounding spaces" },
+        { "startLine": 23, "endLine": 30, "symbol": "applyDiscount", "gist": "computes the amount a code takes off the subtotal, capped at the subtotal" }
+      ]
+    },
+    {
+      "path": "src/tax/vat.ts",
+      "regions": [
+        { "startLine": 1, "endLine": 1, "gist": "imports the Money type" },
+        { "startLine": 3, "endLine": 3, "symbol": "Country", "gist": "the supported countries: DE, FR, GB, NL" },
+        { "startLine": 5, "endLine": 5, "symbol": "VAT_CATEGORIES", "gist": "the VAT categories callers may pass: standard, reduced, ebook" },
+        { "startLine": 6, "endLine": 6, "symbol": "VatCategory", "gist": "one VAT category, derived from VAT_CATEGORIES" },
+        { "startLine": 9, "endLine": 14, "symbol": "RATES", "gist": "standard and reduced VAT rates per country, as fractions" },
+        { "startLine": 18, "endLine": 18, "symbol": "EBOOK_RATES", "gist": "e-book rates for countries that opted in: DE 7%, FR 5.5%" },
+        { "startLine": 20, "endLine": 22, "symbol": "isCountry", "gist": "type guard: is a value a supported country code" },
+        { "startLine": 24, "endLine": 26, "symbol": "isVatCategory", "gist": "type guard: is a value a known VAT category" },
+        { "startLine": 28, "endLine": 31, "symbol": "vatRate", "gist": "the rate for a country and category; e-books fall back to the standard rate" },
+        { "startLine": 34, "endLine": 36, "symbol": "computeVat", "gist": "VAT on a net amount: net × rate, rounded by Money.multiply" }
+      ]
+    },
+    {
+      "path": "src/api/handlers.ts",
+      "regions": [
+        { "startLine": 1, "endLine": 4, "gist": "imports Money, findDiscount, Invoice and the VAT type guards" },
+        { "startLine": 6, "endLine": 8, "symbol": "HttpRequest", "gist": "minimal request shape: an untyped JSON body" },
+        { "startLine": 10, "endLine": 13, "symbol": "HttpResponse", "gist": "minimal response shape: a status and a JSON body" },
+        { "startLine": 15, "endLine": 20, "symbol": "InvoiceBody", "gist": "expected request body: currency, country, lines, optional discountCode" },
+        { "startLine": 22, "endLine": 27, "symbol": "LineBody", "gist": "one requested line: description, price in cents, quantity, VAT category" },
+        { "startLine": 30, "endLine": 56, "symbol": "createInvoiceHandler", "gist": "POST /invoices: validates the body, builds the invoice, returns its totals" },
+        { "startLine": 58, "endLine": 60, "symbol": "badRequest", "gist": "builds a 400 response with an error message" }
+      ]
+    },
+    {
+      "path": "test/round.test.ts",
+      "regions": [
+        { "startLine": 1, "endLine": 3, "gist": "imports node:test, assert and roundToCents" },
+        { "startLine": 5, "endLine": 8, "gist": "test: whole cents stay unchanged" },
+        { "startLine": 10, "endLine": 13, "gist": "test: non-tie fractions round to the nearest cent" },
+        { "startLine": 15, "endLine": 19, "gist": "test: ties round to the even cent by default (12.5 -> 12)" },
+        { "startLine": 21, "endLine": 24, "gist": "test: 'half-up' keeps the old behaviour (12.5 -> 13)" },
+        { "startLine": 26, "endLine": 29, "gist": "test: 1.005 × 100 is still treated as a tie in both modes" },
+        { "startLine": 31, "endLine": 34, "gist": "test: NaN and Infinity throw a RangeError" }
+      ]
+    },
+    {
+      "path": "test/vat.test.ts",
+      "regions": [
+        { "startLine": 1, "endLine": 4, "gist": "imports node:test, assert, Money and the VAT functions" },
+        { "startLine": 6, "endLine": 10, "gist": "test: standard rates for DE, FR, NL" },
+        { "startLine": 12, "endLine": 15, "gist": "test: reduced rates for DE and FR" },
+        { "startLine": 17, "endLine": 20, "gist": "test: e-books get 7% in DE and 5.5% in FR" },
+        { "startLine": 22, "endLine": 24, "gist": "test: e-books in GB fall back to the standard 20%" },
+        { "startLine": 26, "endLine": 28, "gist": "test: computeVat rounds 19.99 × 19% to 3.80" },
+        { "startLine": 30, "endLine": 33, "gist": "test: isCountry rejects unknown codes and prototype keys" }
+      ]
+    },
+    {
+      "path": "test/handlers.test.ts",
+      "regions": [
+        { "startLine": 1, "endLine": 3, "gist": "imports node:test, assert and createInvoiceHandler" },
+        { "startLine": 5, "endLine": 9, "symbol": "order", "gist": "a valid one-line EUR order for Germany, reused by every test" },
+        { "startLine": 11, "endLine": 20, "gist": "test: 201 with net, discount, VAT and gross as JSON" },
+        { "startLine": 22, "endLine": 24, "gist": "test: an unknown country gets a 400" },
+        { "startLine": 26, "endLine": 29, "gist": "test: an unknown VAT category gets a 400" },
+        { "startLine": 31, "endLine": 33, "gist": "test: an unknown discount code gets a 400" }
+      ]
+    }
+  ],
+  "generatedBy": { "provider": "hand-written fixture", "at": "2026-10-03" }
+}

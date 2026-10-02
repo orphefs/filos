@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Same policy as the real webview (fixed nonce), plus connect-src 'self' so the mock host
+         can fetch the fixture. The webview bundle itself never fetches. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'nonce-filosharness'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self';"
+    />
+    <title>Filos webview harness</title>
+    <link rel="stylesheet" href="../dist/webview.css" />
+    <link rel="stylesheet" href="harness.css" />
+  </head>
+  <body class="vscode-light harness">
+    <div class="harness-bar" role="region" aria-label="Harness controls">
+      <strong class="harness-name">Filos harness</strong>
+      <fieldset>
+        <legend>Theme</legend>
+        <button type="button" data-theme="vscode-light">Light</button>
+        <button type="button" data-theme="vscode-dark">Dark</button>
+        <button type="button" data-theme="vscode-high-contrast">High contrast</button>
+      </fieldset>
+      <fieldset>
+        <legend>Width</legend>
+        <button type="button" data-width="">Full</button>
+        <button type="button" data-width="700">700px</button>
+        <button type="button" data-width="480">480px</button>
+      </fieldset>
+      <fieldset>
+        <legend>Host sends</legend>
+        <button type="button" id="h-load">Load sample</button>
+        <button type="button" id="h-load-warn">Load with warnings</button>
+        <button type="button" id="h-load-agent">Load as agent</button>
+        <button type="button" id="h-loading">Loading</button>
+        <button type="button" id="h-error">Error (all actions)</button>
+        <button type="button" id="h-error-auth">Error (auth expired)</button>
+        <label>Select <select id="h-select-id" aria-label="Node to select"></select></label>
+        <button type="button" id="h-select">Host select</button>
+      </fieldset>
+      <button type="button" id="h-reset" title="Forget host and webview state, then reload">Reset state</button>
+    </div>
+    <div class="harness-stage">
+      <div class="harness-frame" id="harness-frame">
+        <div id="app"></div>
+      </div>
+    </div>
+    <section class="harness-log" aria-label="Host log">
+      <header>
+        <strong>Host log</strong> <span class="muted">(messages the webview posted, newest last)</span>
+        <button type="button" id="h-log-clear">Clear</button>
+      </header>
+      <ol id="host-log"></ol>
+    </section>
+    <script nonce="filosharness" src="host.js"></script>
+    <script nonce="filosharness" src="../dist/webview.js"></script>
+  </body>
+</html>

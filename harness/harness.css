@@ -1,0 +1,236 @@
+/* Harness chrome plus approximate VS Code theme variables (Light Modern, Dark Modern, High
+   Contrast). VS Code sets these on <html>; here they hang off the body theme class. */
+
+body.vscode-light {
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, 'Segoe WPC', 'Segoe UI', 'Ubuntu', 'Droid Sans', sans-serif;
+  --vscode-font-size: 13px;
+  --vscode-editor-font-family: 'Droid Sans Mono', 'DejaVu Sans Mono', monospace;
+  --vscode-foreground: #3b3b3b;
+  --vscode-descriptionForeground: #6f6f6f;
+  --vscode-editor-background: #ffffff;
+  --vscode-editor-foreground: #3b3b3b;
+  --vscode-editorWidget-background: #f8f8f8;
+  --vscode-sideBar-background: #f8f8f8;
+  --vscode-panel-border: #e5e5e5;
+  --vscode-widget-border: #e5e5e5;
+  --vscode-focusBorder: #005fb8;
+  --vscode-charts-red: #e51400;
+  --vscode-charts-orange: #d18616;
+  --vscode-charts-purple: #652d90;
+  --vscode-charts-blue: #1a85ff;
+  --vscode-button-background: #005fb8;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-hoverBackground: #0258a8;
+  --vscode-button-secondaryBackground: #e5e5e5;
+  --vscode-button-secondaryForeground: #3b3b3b;
+  --vscode-button-secondaryHoverBackground: #cccccc;
+  --vscode-button-border: #0000001a;
+  --vscode-textLink-foreground: #005fb8;
+  --vscode-textLink-activeForeground: #005fb8;
+  --vscode-list-hoverBackground: #f2f2f2;
+  --vscode-toolbar-hoverBackground: rgba(184, 184, 184, 0.31);
+  --vscode-textBlockQuote-border: #005fb880;
+  --vscode-textCodeBlock-background: #f2f2f2;
+  --vscode-editorWarning-foreground: #bf8803;
+  --vscode-editorError-foreground: #e51400;
+  --vscode-progressBar-background: #005fb8;
+  --vscode-inputValidation-warningBackground: #f6f5d2;
+}
+
+body.vscode-dark {
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, 'Segoe WPC', 'Segoe UI', 'Ubuntu', 'Droid Sans', sans-serif;
+  --vscode-font-size: 13px;
+  --vscode-editor-font-family: 'Droid Sans Mono', 'DejaVu Sans Mono', monospace;
+  --vscode-foreground: #cccccc;
+  --vscode-descriptionForeground: #9d9d9d;
+  --vscode-editor-background: #1f1f1f;
+  --vscode-editor-foreground: #cccccc;
+  --vscode-editorWidget-background: #202020;
+  --vscode-sideBar-background: #181818;
+  --vscode-panel-border: #2b2b2b;
+  --vscode-widget-border: #313131;
+  --vscode-focusBorder: #0078d4;
+  --vscode-charts-red: #f14c4c;
+  --vscode-charts-orange: #d18616;
+  --vscode-charts-purple: #b180d7;
+  --vscode-charts-blue: #3794ff;
+  --vscode-button-background: #0078d4;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-hoverBackground: #026ec1;
+  --vscode-button-secondaryBackground: #313131;
+  --vscode-button-secondaryForeground: #cccccc;
+  --vscode-button-secondaryHoverBackground: #3c3c3c;
+  --vscode-button-border: #ffffff12;
+  --vscode-textLink-foreground: #4daafc;
+  --vscode-textLink-activeForeground: #4daafc;
+  --vscode-list-hoverBackground: #2a2d2e;
+  --vscode-toolbar-hoverBackground: rgba(90, 93, 94, 0.31);
+  --vscode-textBlockQuote-border: #616161;
+  --vscode-textCodeBlock-background: #2b2b2b;
+  --vscode-editorWarning-foreground: #cca700;
+  --vscode-editorError-foreground: #f14c4c;
+  --vscode-progressBar-background: #0078d4;
+  --vscode-inputValidation-warningBackground: #352a05;
+}
+
+body.vscode-high-contrast {
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, 'Segoe WPC', 'Segoe UI', 'Ubuntu', 'Droid Sans', sans-serif;
+  --vscode-font-size: 13px;
+  --vscode-editor-font-family: 'Droid Sans Mono', 'DejaVu Sans Mono', monospace;
+  --vscode-foreground: #ffffff;
+  --vscode-descriptionForeground: #ffffffb3;
+  --vscode-editor-background: #000000;
+  --vscode-editor-foreground: #ffffff;
+  --vscode-editorWidget-background: #0c141f;
+  --vscode-sideBar-background: #000000;
+  --vscode-panel-border: #6fc3df;
+  --vscode-contrastBorder: #6fc3df;
+  --vscode-contrastActiveBorder: #f38518;
+  --vscode-focusBorder: #f38518;
+  --vscode-charts-red: #f48771;
+  --vscode-charts-orange: #ff8c00;
+  --vscode-charts-purple: #b180d7;
+  --vscode-charts-blue: #3794ff;
+  --vscode-button-background: #000000;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-border: #6fc3df;
+  --vscode-button-secondaryBackground: #000000;
+  --vscode-button-secondaryForeground: #ffffff;
+  --vscode-textLink-foreground: #21a6ff;
+  --vscode-textLink-activeForeground: #21a6ff;
+  --vscode-list-hoverBackground: #000000;
+  --vscode-textBlockQuote-border: #ffffff;
+  --vscode-textCodeBlock-background: #000000;
+  --vscode-editorWarning-foreground: #ffd370;
+  --vscode-editorError-foreground: #f48771;
+  --vscode-progressBar-background: #6fc3df;
+}
+
+/* ---- harness chrome ---- */
+
+html,
+body.harness {
+  height: 100%;
+}
+body.harness {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--vscode-editor-background) 85%, #808080);
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: 12px;
+}
+.harness-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-sideBar-background);
+}
+.harness-bar fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  margin: 0;
+  padding: 0 6px 2px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+}
+.harness-bar legend {
+  font-size: 10px;
+  padding: 0 3px;
+  color: var(--vscode-descriptionForeground);
+}
+.harness-bar button,
+.harness-log button,
+.harness-bar select {
+  font: inherit;
+  font-size: 11.5px;
+  padding: 1px 7px;
+  color: var(--vscode-button-secondaryForeground, inherit);
+  background: var(--vscode-button-secondaryBackground, #ddd);
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.harness-bar button[aria-pressed='true'] {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+.harness-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+  padding: 8px;
+}
+.harness-frame {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 1px solid var(--vscode-panel-border);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.25);
+  background: var(--vscode-editor-background);
+  overflow: hidden;
+}
+.harness-frame[data-width] {
+  flex: 0 0 auto;
+}
+.harness-log {
+  height: 22vh;
+  min-height: 90px;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-sideBar-background);
+}
+.harness-log header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 10px;
+}
+.harness-log .muted {
+  color: var(--vscode-descriptionForeground);
+}
+.harness-log ol {
+  flex: 1;
+  overflow: auto;
+  margin: 0;
+  padding: 0 10px 6px 40px;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 11px;
+}
+.harness-log li {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.harness-log li.from-host {
+  color: var(--vscode-descriptionForeground);
+}
+
+/* ?compact: for small preview panes. One scrolling row of controls, no visible log
+   (messages are still recorded in window.__hostLog). */
+body.harness-compact .harness-bar {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding: 3px 6px;
+}
+body.harness-compact .harness-bar fieldset {
+  flex-wrap: nowrap;
+  flex: none;
+}
+body.harness-compact .harness-name {
+  display: none;
+}
+body.harness-compact .harness-stage {
+  padding: 0;
+}
+body.harness-compact .harness-log {
+  display: none;
+}

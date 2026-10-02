@@ -1,0 +1,238 @@
+{
+  "contractVersion": "0.1",
+  "pr": {
+    "title": "Use banker's rounding for cents",
+    "base": "main",
+    "head": "bankers-rounding"
+  },
+  "orientation": "Touches money (round.ts), which affects checkout via orderTotal. The risky one is money: roundToCents changes how exact half-cent ties round (away-from-zero to even), affecting 2 in-repo callers and 1 external consumer (invoice-service), with no tests covering it.",
+  "nodes": [
+    {
+      "id": "money",
+      "label": "money",
+      "kind": "module",
+      "change": "modified",
+      "summary": "Shared price-rounding helpers. roundToCents now rounds exact half-cent ties to the nearest even cent (banker's rounding) instead of always away from zero, to avoid cumulative upward drift when summing many rounded prices.",
+      "anchors": [
+        {
+          "file": "money/round.ts",
+          "startLine": 3,
+          "endLine": 14,
+          "symbol": "roundToCents"
+        }
+      ],
+      "risk": {
+        "signals": {
+          "externalConsumers": 1,
+          "internalFanOut": 2,
+          "publicApi": true,
+          "hasTests": false,
+          "testsChanged": false,
+          "linesChanged": 12,
+          "behaviourChange": true
+        },
+        "judgement": 0.6,
+        "why": "Changes the tie-breaking rule for every rounded price; 2 in-repo callers and 1 external consumer (invoice-service) depend on it, and no tests exercise the new tie case."
+      }
+    },
+    {
+      "id": "money/roundToCents",
+      "label": "roundToCents",
+      "kind": "function",
+      "parent": "money",
+      "change": "modified",
+      "summary": "Rounds an amount to whole cents. Previously used Math.round (ties away from zero); now detects an exact .5-cent tie via a floating-point tolerance check and rounds that case to the even cent, otherwise falls back to Math.round as before.",
+      "anchors": [
+        {
+          "file": "money/round.ts",
+          "startLine": 3,
+          "endLine": 14,
+          "symbol": "roundToCents"
+        }
+      ],
+      "risk": {
+        "signals": {
+          "externalConsumers": 1,
+          "internalFanOut": 2,
+          "publicApi": true,
+          "hasTests": false,
+          "testsChanged": false,
+          "linesChanged": 12,
+          "behaviourChange": true
+        },
+        "judgement": 0.6,
+        "why": "Exact-tie amounts now round differently (e.g. $0.005 rounds down instead of up); 2 in-repo callers and 1 external consumer, untested."
+      }
+    },
+    {
+      "id": "money/formatCents",
+      "label": "formatCents",
+      "kind": "function",
+      "parent": "money",
+      "change": "context",
+      "summary": "Formats an amount as a fixed two-decimal string by delegating to roundToCents. Unchanged itself, but its output for exact-tie inputs changes because it calls roundToCents, and it has an external consumer that will see the new behaviour.",
+      "anchors": [
+        {
+          "file": "money/round.ts",
+          "startLine": 16,
+          "endLine": 19,
+          "symbol": "formatCents"
+        }
+      ],
+      "risk": {
+        "signals": {
+          "externalConsumers": 1,
+          "internalFanOut": 0,
+          "publicApi": true,
+          "hasTests": false,
+          "behaviourChange": true
+        },
+        "judgement": 0.3,
+        "why": "Inherits roundToCents' new tie behaviour; 1 external consumer (storefront-web) formats tie amounts differently with no test coverage."
+      }
+    },
+    {
+      "id": "checkout",
+      "label": "checkout",
+      "kind": "module",
+      "change": "context",
+      "summary": "Computes order totals including tax, rounding once at the end via roundToCents. Included because orderTotal's output shifts for any order whose taxed subtotal lands exactly on a half-cent.",
+      "anchors": [
+        {
+          "file": "checkout/total.ts",
+          "startLine": 8,
+          "endLine": 12,
+          "symbol": "orderTotal"
+        }
+      ],
+      "risk": {
+        "signals": {
+          "internalFanOut": 0,
+          "hasTests": false,
+          "behaviourChange": true
+        },
+        "judgement": 0.3,
+        "why": "orderTotal's rounded result can change for exact half-cent taxed subtotals, with no tests to catch a regression."
+      }
+    },
+    {
+      "id": "checkout/orderTotal",
+      "label": "orderTotal",
+      "kind": "function",
+      "parent": "checkout",
+      "change": "context",
+      "summary": "Sums line items by price*qty, applies tax, then rounds once via roundToCents. Shown as context because it's the clearest in-repo caller whose final total can shift under the new tie-breaking rule.",
+      "anchors": [
+        {
+          "file": "checkout/total.ts",
+          "startLine": 8,
+          "endLine": 12,
+          "symbol": "orderTotal"
+        }
+      ],
+      "risk": {
+        "signals": {
+          "hasTests": false,
+          "behaviourChange": true
+        },
+        "judgement": 0.3,
+        "why": "Relies entirely on roundToCents for its single rounding step, so any taxed subtotal landing on a half-cent now resolves differently."
+      }
+    },
+    {
+      "id": "ext/invoice-service",
+      "label": "invoice-service",
+      "kind": "external",
+      "change": "context",
+      "summary": "External consumer of roundToCents per the dependency index; will observe the new even-tie rounding directly.",
+      "anchors": [],
+      "risk": {
+        "signals": {},
+        "why": "External consumer, not modifiable from this repo."
+      }
+    },
+    {
+      "id": "ext/storefront-web",
+      "label": "storefront-web",
+      "kind": "external",
+      "change": "context",
+      "summary": "External consumer of formatCents per the dependency index; displayed totals for half-cent ties will change.",
+      "anchors": [],
+      "risk": {
+        "signals": {},
+        "why": "External consumer, not modifiable from this repo."
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "money/formatCents",
+      "to": "money/roundToCents",
+      "kind": "calls",
+      "label": "formats rounded amount"
+    },
+    {
+      "from": "checkout/orderTotal",
+      "to": "money/roundToCents",
+      "kind": "calls",
+      "label": "rounds final total"
+    },
+    {
+      "from": "ext/invoice-service",
+      "to": "money/roundToCents",
+      "kind": "consumes"
+    },
+    {
+      "from": "ext/storefront-web",
+      "to": "money/formatCents",
+      "kind": "consumes"
+    }
+  ],
+  "files": [
+    {
+      "path": "money/round.ts",
+      "regions": [
+        {
+          "startLine": 3,
+          "endLine": 14,
+          "symbol": "roundToCents",
+          "gist": "Rounds to whole cents; exact half-cent ties now round to the even cent"
+        },
+        {
+          "startLine": 16,
+          "endLine": 19,
+          "symbol": "formatCents",
+          "gist": "Formats an amount as a fixed two-decimal string via roundToCents"
+        }
+      ]
+    },
+    {
+      "path": "checkout/total.ts",
+      "regions": [
+        {
+          "startLine": 1,
+          "endLine": 1,
+          "symbol": "import",
+          "gist": "Imports roundToCents from the money module"
+        },
+        {
+          "startLine": 3,
+          "endLine": 6,
+          "symbol": "LineItem",
+          "gist": "Shape of a line item: price and quantity"
+        },
+        {
+          "startLine": 8,
+          "endLine": 12,
+          "symbol": "orderTotal",
+          "gist": "Sums price*qty across items, applies tax, rounds once at the end"
+        }
+      ]
+    }
+  ],
+  "generatedBy": {
+    "provider": "claude",
+    "model": "claude-sonnet-5",
+    "at": "2026-10-02T21:51:58.338Z"
+  }
+}

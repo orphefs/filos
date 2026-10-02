@@ -1,0 +1,113 @@
+{
+  "contractVersion": "0.1",
+  "pr": { "title": "Use banker's rounding for cents", "base": "main", "head": "bankers-rounding" },
+  "orientation": "Touches money, with checkout as context. The risky one is money: roundToCents now rounds exact half-cent ties to the even cent, which changes order totals and is consumed by 2 services outside this repo.",
+  "nodes": [
+    {
+      "id": "money",
+      "label": "money",
+      "kind": "module",
+      "change": "modified",
+      "risk": {
+        "signals": { "externalConsumers": 2, "internalFanOut": 2, "hasTests": false, "linesChanged": 12, "behaviourChange": true },
+        "judgement": 0.6,
+        "why": "Changes how every price rounds; 2 in-repo callers, 2 external consumers, no tests."
+      },
+      "summary": "Rounding helpers used by every price calculation. This PR switches roundToCents from half-away-from-zero to banker's rounding, so totals that land exactly on a half cent now round to the even cent.",
+      "anchors": [{ "file": "money/round.ts", "startLine": 3, "endLine": 14, "symbol": "roundToCents" }]
+    },
+    {
+      "id": "money/roundToCents",
+      "label": "roundToCents",
+      "kind": "function",
+      "parent": "money",
+      "change": "modified",
+      "risk": {
+        "signals": { "externalConsumers": 1, "internalFanOut": 2, "publicApi": true, "hasTests": false, "linesChanged": 12, "behaviourChange": true },
+        "judgement": 0.6,
+        "why": "Observable change for every caller; 2 in-repo callers, 1 external consumer, no tests."
+      },
+      "summary": "Rounds an amount to whole cents. Exact half-cent ties now go to the even cent (2.345 becomes 2.34, not 2.35), which stops sums drifting upwards but changes some totals by one cent.",
+      "anchors": [{ "file": "money/round.ts", "startLine": 3, "endLine": 14, "symbol": "roundToCents" }]
+    },
+    {
+      "id": "money/formatCents",
+      "label": "formatCents",
+      "kind": "function",
+      "parent": "money",
+      "change": "context",
+      "risk": {
+        "signals": { "externalConsumers": 1, "internalFanOut": 0, "hasTests": false, "linesChanged": 0, "behaviourChange": true },
+        "judgement": 0.3,
+        "why": "Unchanged, but inherits the new rounding; 1 external consumer formats prices with it."
+      },
+      "summary": "Formats an amount as a two-decimal string by calling roundToCents, so displayed prices change wherever a tie occurs.",
+      "anchors": [{ "file": "money/round.ts", "startLine": 16, "endLine": 19, "symbol": "formatCents" }]
+    },
+    {
+      "id": "checkout",
+      "label": "checkout",
+      "kind": "module",
+      "change": "context",
+      "risk": { "signals": { "linesChanged": 0 }, "judgement": 0.2, "why": "Not changed; its totals inherit the new rounding." },
+      "summary": "Computes order totals. Nothing here changed, but orderTotal rounds through roundToCents.",
+      "anchors": []
+    },
+    {
+      "id": "checkout/orderTotal",
+      "label": "orderTotal",
+      "kind": "function",
+      "parent": "checkout",
+      "change": "context",
+      "risk": {
+        "signals": { "internalFanOut": 0, "hasTests": false, "linesChanged": 0, "behaviourChange": true },
+        "judgement": 0.35,
+        "why": "Unchanged caller whose result changes by a cent on ties; no tests."
+      },
+      "summary": "Sums price times quantity, applies tax and rounds once at the end with roundToCents. Read it to see which totals can now differ by a cent.",
+      "anchors": [{ "file": "checkout/total.ts", "startLine": 8, "endLine": 12, "symbol": "orderTotal" }]
+    },
+    {
+      "id": "ext/invoice-service",
+      "label": "invoice-service",
+      "kind": "external",
+      "change": "context",
+      "risk": { "signals": {}, "why": "Calls roundToCents directly when issuing invoices." },
+      "summary": "A service outside this repo that rounds invoice lines with roundToCents. Invoices and order totals must agree, so both need the same rounding.",
+      "anchors": []
+    },
+    {
+      "id": "ext/storefront-web",
+      "label": "storefront-web",
+      "kind": "external",
+      "change": "context",
+      "risk": { "signals": {}, "why": "Displays prices with formatCents." },
+      "summary": "The web storefront, outside this repo, formats displayed prices with formatCents.",
+      "anchors": []
+    }
+  ],
+  "edges": [
+    { "from": "checkout/orderTotal", "to": "money/roundToCents", "kind": "calls", "label": "rounds the total" },
+    { "from": "money/formatCents", "to": "money/roundToCents", "kind": "calls" },
+    { "from": "ext/invoice-service", "to": "money/roundToCents", "kind": "consumes" },
+    { "from": "ext/storefront-web", "to": "money/formatCents", "kind": "consumes" }
+  ],
+  "files": [
+    {
+      "path": "money/round.ts",
+      "regions": [
+        { "startLine": 1, "endLine": 1, "gist": "Header: rounding helpers shared by every price calculation" },
+        { "startLine": 3, "endLine": 14, "symbol": "roundToCents", "gist": "Rounds to whole cents; exact half-cent ties go to the even cent" },
+        { "startLine": 16, "endLine": 19, "symbol": "formatCents", "gist": "Formats an amount as a two-decimal string via roundToCents" }
+      ]
+    },
+    {
+      "path": "checkout/total.ts",
+      "regions": [
+        { "startLine": 1, "endLine": 1, "gist": "Imports roundToCents from money" },
+        { "startLine": 3, "endLine": 6, "symbol": "LineItem", "gist": "A priced order line: unit price and quantity" },
+        { "startLine": 8, "endLine": 12, "symbol": "orderTotal", "gist": "Sums price x qty, applies tax, rounds the total once" }
+      ]
+    }
+  ]
+}
