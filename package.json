@@ -1,0 +1,98 @@
+{
+  "name": "filos",
+  "displayName": "Filos",
+  "description": "Socratic PR review: understand the change, then review it.",
+  "version": "0.0.1",
+  "publisher": "orphefs",
+  "private": true,
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/orphefs/filos"
+  },
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "filos.reviewSample",
+        "title": "Review Sample PR (bundled example)",
+        "category": "Filos"
+      },
+      {
+        "command": "filos.reviewSampleWithAgent",
+        "title": "Review Sample PR with Agent",
+        "category": "Filos"
+      },
+      {
+        "command": "filos.reviewCurrentBranch",
+        "title": "Review Current Branch",
+        "category": "Filos"
+      }
+    ],
+    "configuration": {
+      "title": "Filos",
+      "properties": {
+        "filos.provider": {
+          "type": "string",
+          "enum": [
+            "claude"
+          ],
+          "default": "claude",
+          "description": "Agent CLI used for the comprehension pass."
+        },
+        "filos.claude.path": {
+          "type": "string",
+          "default": "claude",
+          "description": "Path to the claude CLI."
+        },
+        "filos.claude.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model alias passed to --model (empty = CLI default)."
+        },
+        "filos.claude.maxBudgetUsd": {
+          "type": "number",
+          "default": 1,
+          "description": "Spending cap per comprehension pass."
+        },
+        "filos.agentTimeoutSeconds": {
+          "type": "number",
+          "default": 600,
+          "description": "Kill the agent CLI after this many seconds."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.webview.json --noEmit",
+    "validate:fixture": "tsx scripts/validate-graph.ts fixtures/sample-graph.json --repo fixtures/sample-repo/head",
+    "test:unit": "node --test --import tsx test/unit/*.test.ts",
+    "test:e2e": "npm run build && node dist/test/runE2E.js",
+    "harness": "npm run build && node scripts/serve-harness.mjs",
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --skip-license -o dist/filos.vsix"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.19.43",
+    "@types/vscode": "^1.100.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.2",
+    "mocha": "^12.0.3",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0",
+    "elkjs": "^0.12.0"
+  }
+}
