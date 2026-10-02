@@ -134,6 +134,13 @@ export class App {
         this.clearSelection();
       }
     });
+    // When the host hands focus back after opening code, Chrome has already cleared the frame's
+    // focused element; put it back on the selected node so arrow keys keep working.
+    window.addEventListener('focus', () => {
+      if (this.mode === 'graph' && this.selected && (!document.activeElement || document.activeElement === document.body)) {
+        this.graph.focusNode(this.selected);
+      }
+    });
     new ResizeObserver(() => {
       if (this.mode !== 'graph' || !this.graph.bounds.width) return;
       if (!this.viewport.userMoved) this.autoFit();
@@ -315,6 +322,8 @@ export class App {
       return;
     }
     for (const a of ancestors(this.model, id)) this.expanded.add(a);
+    // Same as a click: selecting a closed module also opens it.
+    if (hasChildren(this.model, id)) this.expanded.add(id);
     this.setSelected(id, false);
     void this.refresh({ reveal: id, animate: true });
   }

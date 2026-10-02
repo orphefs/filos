@@ -10,5 +10,5 @@
     "types": ["node", "vscode", "mocha"],
     "noEmit": true
   },
-  "include": ["src/extension.ts", "src/contract/**/*.ts", "src/agent/**/*.ts", "src/host/**/*.ts", "src/protocol.ts", "test/**/*.ts"]
+  "include": ["src/extension.ts", "src/contract/**/*.ts", "src/agent/**/*.ts", "src/host/**/*.ts", "src/protocol.ts", "test/**/*.ts", "scripts/**/*.ts"]
 }

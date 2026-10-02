@@ -50,7 +50,7 @@
         "filos.claude.path": {
           "type": "string",
           "default": "claude",
-          "description": "Path to the claude CLI."
+          "description": "Path to the claude CLI: a name on PATH, an absolute path, ~/\u2026, or a workspace-relative path like ./node_modules/.bin/claude."
         },
         "filos.claude.model": {
           "type": "string",
@@ -78,7 +78,9 @@
     "test:unit": "node --test --import tsx test/unit/*.test.ts",
     "test:e2e": "npm run build && node dist/test/runE2E.js",
     "harness": "npm run build && node scripts/serve-harness.mjs",
-    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --skip-license -o dist/filos.vsix"
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --skip-license -o dist/filos.vsix",
+    "test:e2e:vsix": "npm run package && node dist/test/runE2E.js --vsix dist/filos.vsix",
+    "smoke:claude": "tsx scripts/smoke-claude.ts --model sonnet --budget 0.5"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
