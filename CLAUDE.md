@@ -4,7 +4,7 @@
 
 ## Status
 
-**Design phase.** UX comes first. Do not write extension code until the core screens are agreed. When discussing UX, prefer quick visual mockups (static HTML) over prose.
+**Design phase, with a throwaway-quality prototype to react to.** UX comes first. At Orfeas's request (2026-10-03), build-order slices 1–3 were prototyped on branch `prototype` so the UX can be judged in real VS Code. Its UX choices are provisional (listed below), not decided. Beyond the prototype, don't write more extension code until the core screens are agreed. When discussing UX, prefer quick visual mockups (static HTML) over prose.
 
 ## The problem
 
@@ -78,6 +78,44 @@ PR review volume keeps growing, and the reviewer's mental model of the codebase 
 - The JSON contract for the graph (nodes, edges, risk, file/line anchors). This should fall out of the UX.
 - How the questionnaire chooses what to ask.
 - Name availability on the VS Code Marketplace (check in VS Code's extension search).
+
+## Prototype (branch `prototype`)
+
+What exists: the bundled sample PR (`fixtures/`), contract v0.1 (`docs/graph-contract.md`, `schema/`), the webview graph and summary, the native-editor code pane with folds and gists, the `claude` CLI provider, unit tests (`npm run test:unit`) and an e2e suite in real headless VS Code (`npm run test:e2e`). The webview alone runs with `npm run harness`.
+
+Measured: the real comprehension pass on the sample PR (10 files) costs about $0.40 and takes 3.5–4.5 minutes with Sonnet. With the CLI's default model (Opus, 1M context) it hit the $1 cap after 4.5 minutes.
+
+### Provisional decisions (made to get it working; Orfeas to confirm or change)
+
+- **Agent defaults:** `--model sonnet`, $1 spending cap, 600 s timeout. The CLI runs with Read/Grep/Glob only, `--setting-sources user` (the reviewed repo's `.claude/` settings are ignored) and no MCP.
+- **Agent output:** line-number slips (out-of-range anchors, partially overlapping outline regions) are repaired, and each repair shows as a warning. Structural problems (unknown ids, bad parents, dangling edges) reject the graph. There is no automatic re-prompt.
+- **Graph:**
+  - Layout direction is chosen automatically (top-down in narrow panes).
+  - Clicking a closed module opens it and selects it; only the chevron, ← or Collapse all close it.
+  - The wheel zooms. When the stacked panel scrolls, the wheel scrolls the page and Ctrl/Cmd+wheel zooms.
+  - Edges of a closed module are lifted to it, with a count bubble.
+  - Outside consumers are purple and dashed.
+  - Change kind is a monochrome badge, so it doesn't compete with risk red.
+- **Risk:** weights in `src/contract/risk.ts`.
+  - External consumers count most; agent judgement adds at most 0.15.
+  - Bands: medium from 0.25, high from 0.55.
+  - A parent takes the colour of its riskiest child.
+- **Code pane:**
+  - A preview tab in column 2, replaced on each click.
+  - Folds use the built-in fold commands. These need the editor focused, so focus flicks to the editor and back.
+  - Gists are muted italic text at the end of the fold's first line.
+  - The selection's anchors get a whole-line red tint.
+- **Workspace trust:** the sample works in Restricted Mode; Review Current Branch needs a trusted workspace (it runs git and the agent CLI there).
+- **Dependency index:** `.filos/dependency-index.json`, format drafted in `docs/dependency-index.md`.
+
+### Open UX questions raised by the prototype
+
+- **Gists get cut off:** text at the end of a line falls off-screen in a narrow code column. Options: a CodeLens line above each fold (always visible, but costs a line), a hover only, or a gist that replaces the folded body's first line (needs proposed API).
+- **Tint strength:** the whole-line red can be heavy in dark themes. Should it be a left-border or gutter mark instead?
+- **Re-run cost:** "Re-run analysis" spends real money even on the sample. Confirm first, or hide it for the sample?
+- **Host-driven selection:** should selection (from commands or tests) also open modules? The prototype says yes.
+- **Floor for external consumers:** should anything with external consumers be at least medium risk? Today `createInvoiceHandler` (1 consumer) is just under the medium threshold.
+- **Lazy summaries:** summaries are currently written in the comprehension pass. Lazy, cached per-selection summaries are still to come.
 
 ## Build order (after UX is settled)
 
