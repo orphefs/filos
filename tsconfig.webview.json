@@ -10,5 +10,5 @@
     "types": [],
     "noEmit": true
   },
-  "include": ["src/webview/**/*.ts", "src/contract/**/*.ts", "src/protocol.ts"]
+  "include": ["src/webview/**/*.ts", "src/contract/**/*.ts", "src/review/**/*.ts", "src/protocol.ts"]
 }

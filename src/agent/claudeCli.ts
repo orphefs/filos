@@ -8,7 +8,7 @@ import { validateGraph } from '../contract/validate';
 import { runProcess, type RunResult } from './exec';
 import { safeProgressText } from './progress';
 import { buildPrompt } from './prompt';
-import { ProviderError, type AgentProvider, type ComprehensionRequest, type ComprehensionResult } from './provider';
+import { ProviderError, type AgentProvider, type AskRequest, type AskResult, type ComprehensionRequest, type ComprehensionResult } from './provider';
 import { toCliSchema } from './schema';
 
 export interface ClaudeCliOptions {
@@ -217,6 +217,10 @@ export class ClaudeCliProvider implements AgentProvider {
       throw classifyFailure({ exitCode: run.exitCode, stderr: run.stderrTail || run.stdout }) ?? new ProviderError('failed', 'claude auth status failed');
     }
     // Unparseable output with exit 0: an older CLI. Let the real call classify any problem.
+  }
+
+  async ask<T>(req: AskRequest<T>): Promise<AskResult<T>> {
+    throw new ProviderError('failed', `task "${req.task}" is not implemented yet`);
   }
 
   async comprehend(req: ComprehensionRequest): Promise<ComprehensionResult> {
