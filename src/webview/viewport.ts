@@ -113,6 +113,10 @@ export class Viewport {
   }
 
   private onWheel(ev: WheelEvent): void {
+    // When the panel is stacked and scrolls, a plain wheel scrolls the page; zooming then needs
+    // Ctrl/Cmd (trackpad pinch arrives as ctrl+wheel, so pinch still zooms).
+    const page = document.scrollingElement;
+    if (!ev.ctrlKey && !ev.metaKey && page && page.scrollHeight > page.clientHeight + 1) return;
     ev.preventDefault();
     const r = this.svg.getBoundingClientRect();
     // Pixel deltas from trackpads are small and frequent; line/page deltas come from wheels.

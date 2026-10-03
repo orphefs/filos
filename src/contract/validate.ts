@@ -12,6 +12,13 @@ export type ValidationResult =
 export interface ValidateOptions {
   /** Returns the head-revision text of a repo-relative file, or undefined if missing. Enables line-bound checks. */
   readFile?: (path: string) => string | undefined;
+  /**
+   * Repair line-number slips instead of rejecting: clamp ranges to the file, trim or drop
+   * partially overlapping outline regions, drop ranges in missing files. Each repair becomes a
+   * warning. Structural problems (ids, parents, edges) are still errors. Use for agent output;
+   * hand-written fixtures stay strict.
+   */
+  repair?: boolean;
 }
 
 const ajv = new Ajv({ allErrors: true, strict: false });
@@ -25,8 +32,9 @@ export function validateGraph(input: unknown, opts: ValidateOptions = {}): Valid
     const errors = (schemaCheck.errors ?? []).map((e) => `${e.instancePath || '(root)'} ${e.message ?? 'is invalid'}${e.params && 'allowedValues' in e.params ? `: ${(e.params as { allowedValues: unknown[] }).allowedValues.join(', ')}` : ''}`);
     return { ok: false, errors, warnings };
   }
-  const graph = input as unknown as ReviewGraph;
+  const graph = (opts.repair ? structuredClone(input) : input) as unknown as ReviewGraph;
   const errors: string[] = [];
+  if (opts.repair) repairLines(graph, opts.readFile, warnings);
 
   const byId = new Map<string, (typeof graph.nodes)[number]>();
   for (const n of graph.nodes) {
@@ -109,4 +117,80 @@ export function validateGraph(input: unknown, opts: ValidateOptions = {}): Valid
   }
 
   return errors.length ? { ok: false, errors, warnings } : { ok: true, graph, warnings };
+}
+
+/** Fixes the line-number slips agents make, in place, recording a warning per repair. */
+function repairLines(graph: ReviewGraph, readFile: ValidateOptions['readFile'], warnings: string[]): void {
+  const counts = new Map<string, number | undefined>();
+  const lineCount = (path: string): number | undefined => {
+    if (!readFile) return Number.POSITIVE_INFINITY;
+    if (!counts.has(path)) {
+      const text = readFile(path);
+      counts.set(path, text === undefined ? undefined : text.replace(/\n$/, '').split('\n').length);
+    }
+    return counts.get(path);
+  };
+  /** Returns the clamped range, or undefined if nothing of it is left. */
+  const clamp = (where: string, path: string, start: number, end: number): [number, number] | undefined => {
+    const count = lineCount(path);
+    if (count === undefined) {
+      warnings.push(`repaired: dropped ${where}, file "${path}" is not in the head revision`);
+      return undefined;
+    }
+    if (start > end) [start, end] = [end, start];
+    if (start > count) {
+      warnings.push(`repaired: dropped ${where} at ${path}:${start}-${end}, past the end of the file (${count} lines)`);
+      return undefined;
+    }
+    if (end > count) {
+      warnings.push(`repaired: clamped ${where} ${path}:${start}-${end} to end at line ${count}`);
+      end = count;
+    }
+    return [start, end];
+  };
+
+  for (const n of graph.nodes) {
+    n.anchors = n.anchors.flatMap((a) => {
+      const r = clamp(`an anchor of "${n.id}"`, a.file, a.startLine, a.endLine);
+      return r ? [{ ...a, startLine: r[0], endLine: r[1] }] : [];
+    });
+  }
+
+  graph.files = graph.files.filter((f) => {
+    if (lineCount(f.path) !== undefined) return true;
+    warnings.push(`repaired: dropped the outline of "${f.path}", which is not in the head revision`);
+    return false;
+  });
+  for (const f of graph.files) {
+    const regions = f.regions
+      .flatMap((r) => {
+        const c = clamp(`outline region "${r.symbol ?? r.gist}"`, f.path, r.startLine, r.endLine);
+        return c ? [{ ...r, startLine: c[0], endLine: c[1] }] : [];
+      })
+      .sort((a, b) => a.startLine - b.startLine || b.endLine - a.endLine);
+    const kept: typeof regions = [];
+    for (const r of regions) {
+      let keep = true;
+      // Partial overlap with an earlier region (nesting is fine). Usually a doc comment or closing
+      // brace counted twice, so end the earlier region just before r, unless that breaks its nesting.
+      for (let clash = findClash(kept, r); clash && keep; clash = findClash(kept, r)) {
+        const c = clash;
+        const trimmedEnd = r.startLine - 1;
+        const breaksNesting = kept.some((k) => k !== c && k.startLine >= c.startLine && k.endLine <= c.endLine && k.endLine > trimmedEnd);
+        if (trimmedEnd >= c.startLine && !breaksNesting) {
+          warnings.push(`repaired: ${f.path} regions ${c.startLine}-${c.endLine} and ${r.startLine}-${r.endLine} overlapped; the first now ends at ${trimmedEnd}`);
+          c.endLine = trimmedEnd;
+        } else {
+          warnings.push(`repaired: dropped ${f.path} region ${r.startLine}-${r.endLine}, which overlapped ${c.startLine}-${c.endLine}`);
+          keep = false;
+        }
+      }
+      if (keep) kept.push(r);
+    }
+    f.regions = kept;
+  }
+}
+
+function findClash<T extends { startLine: number; endLine: number }>(kept: T[], r: T): T | undefined {
+  return kept.find((k) => k.startLine < r.startLine && r.startLine <= k.endLine && r.endLine > k.endLine);
 }

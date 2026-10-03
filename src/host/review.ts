@@ -121,6 +121,12 @@ export class ReviewController implements vscode.Disposable {
   async reviewCurrentBranch(options: BranchReviewOptions = {}): Promise<void> {
     this.lastAttempt = () => this.reviewCurrentBranch(options);
     this.lastBranchOptions = options;
+    if (!vscode.workspace.isTrusted) {
+      const manage = 'Manage Workspace Trust';
+      const choice = await vscode.window.showErrorMessage('Filos: reviewing the current branch runs git and the agent CLI in this folder, so the workspace must be trusted.', manage);
+      if (choice === manage) await vscode.commands.executeCommand('workbench.trust.manage');
+      return;
+    }
     const folders = (vscode.workspace.workspaceFolders ?? []).filter((f) => f.uri.scheme === 'file');
     if (!folders.length) {
       void vscode.window.showErrorMessage('Filos: open a folder that is a git repository to review its current branch.');
@@ -443,7 +449,7 @@ function readProviderConfig(): ProviderConfig {
   return {
     id: id as ProviderConfig['id'],
     claudePath: resolveExecutable(c.get<string>('claude.path', 'claude')),
-    model: c.get<string>('claude.model', '') || undefined,
+    model: c.get<string>('claude.model', 'sonnet') || undefined,
     maxBudgetUsd: c.get<number>('claude.maxBudgetUsd', 1),
     timeoutSeconds: c.get<number>('agentTimeoutSeconds', 600),
   };

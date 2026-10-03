@@ -305,7 +305,7 @@ export class ClaudeCliProvider implements AgentProvider {
       g.pr = { title: req.prTitle, base: req.base, head: req.head };
       g.generatedBy = { provider: this.id, ...(usedModel ? { model: usedModel } : {}), at: new Date().toISOString() };
     }
-    const v = validateGraph(raw, { readFile: repoReader(req.repoRoot) });
+    const v = validateGraph(raw, { readFile: repoReader(req.repoRoot), repair: true });
     if (!v.ok) {
       throw new ProviderError('contract', `Claude Code's graph broke the contract (${v.errors.length} problem${v.errors.length === 1 ? '' : 's'}).`, v.errors.join('\n'));
     }

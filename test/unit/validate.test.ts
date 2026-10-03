@@ -151,4 +151,54 @@ describe('validateGraph', () => {
       assert.ok(r.warnings.some((w) => /"checkout\/total.ts".*has no outline/.test(w)));
     });
   });
+
+  describe('repair mode (agent output)', () => {
+    const repairOpts = { readFile: readFixtureFile, repair: true };
+
+    it('clamps an anchor past the end of the file and warns', () => {
+      const g = fixtureGraph();
+      g.nodes[1].anchors[0].endLine = 20; // money/round.ts has 19 lines
+      const r = validateGraph(g, repairOpts);
+      assert.ok(r.ok, r.ok ? '' : r.errors.join('\n'));
+      assert.equal(r.graph.nodes[1].anchors[0].endLine, 19);
+      assert.ok(r.warnings.some((w) => /clamped an anchor of "money\/roundToCents"/.test(w)));
+      assert.equal(g.nodes[1].anchors[0].endLine, 20, 'input is not mutated');
+    });
+
+    it('trims the earlier of two partially overlapping regions', () => {
+      const g = fixtureGraph();
+      g.files[0].regions[2].startLine = 12; // 3-14 and 12-19
+      const r = validateGraph(g, repairOpts);
+      assert.ok(r.ok, r.ok ? '' : r.errors.join('\n'));
+      const regions = r.graph.files[0].regions.map((x) => `${x.startLine}-${x.endLine}`);
+      assert.ok(regions.includes('3-11') && regions.includes('12-19'), regions.join(' '));
+      assert.ok(r.warnings.some((w) => /regions 3-14 and 12-19 overlapped; the first now ends at 11/.test(w)));
+    });
+
+    it('drops an overlapping region when trimming would break nesting', () => {
+      const g = fixtureGraph();
+      g.files[0].regions.push({ startLine: 10, endLine: 14, symbol: 'inner', gist: 'nested in 3-14' });
+      g.files[0].regions[2].startLine = 12; // 12-19 clashes with 3-14, whose child 10-14 would stick out
+      const r = validateGraph(g, repairOpts);
+      assert.ok(r.ok, r.ok ? '' : r.errors.join('\n'));
+      assert.ok(r.warnings.some((w) => /dropped money\/round.ts region 12-19/.test(w)), r.warnings.join('\n'));
+    });
+
+    it('drops ranges in files missing from the head revision', () => {
+      const g = fixtureGraph();
+      g.nodes[1].anchors.push({ file: 'money/gone.ts', startLine: 1, endLine: 2 });
+      g.files.push({ path: 'money/gone.ts', regions: [{ startLine: 1, endLine: 2, gist: 'gone' }] });
+      const r = validateGraph(g, repairOpts);
+      assert.ok(r.ok, r.ok ? '' : r.errors.join('\n'));
+      assert.ok(!r.graph.nodes[1].anchors.some((a) => a.file === 'money/gone.ts'));
+      assert.ok(!r.graph.files.some((f) => f.path === 'money/gone.ts'));
+    });
+
+    it('still rejects structural problems', () => {
+      const g = fixtureGraph();
+      g.edges.push({ from: 'checkout/orderTotal', to: 'money/ceilToCents', kind: 'calls' });
+      const r = validateGraph(g, repairOpts);
+      assert.equal(r.ok, false);
+    });
+  });
 });

@@ -125,10 +125,11 @@ describe('ClaudeCliProvider with the fake CLI', () => {
     assert.match(err.detail ?? '', /Invalid API key/);
   });
 
-  it('contract: semantic violations are rejected with the validation errors as detail', async () => {
+  it('contract: structural violations are rejected with the validation errors as detail', async () => {
     const err = await rejectsWith(provider('contract').comprehend(request()), 'contract');
     assert.match(err.detail ?? '', /unknown target/);
-    assert.match(err.detail ?? '', /exceed money\/round.ts \(19 lines\)/);
+    // Line-number slips are repaired, not reported: only the structural error remains.
+    assert.doesNotMatch(err.detail ?? '', /exceed money\/round.ts/);
   });
 
   it('slow + short timeout: timeout, and the whole process tree is killed', async () => {
