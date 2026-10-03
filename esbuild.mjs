@@ -1,4 +1,5 @@
-// Bundles the extension host (node/cjs), the webview (browser/iife) and the e2e test runner.
+// Bundles the extension host (node/cjs), the webview (browser/iife), the harness's mock host and
+// the e2e test runner.
 import * as esbuild from 'esbuild';
 import { cpSync, mkdirSync, existsSync } from 'node:fs';
 
@@ -9,6 +10,10 @@ const builds = [
   { ...common, entryPoints: ['src/extension.ts'], outfile: 'dist/extension.js', platform: 'node', format: 'cjs', target: 'node20', external: ['vscode'] },
   { ...common, entryPoints: ['src/webview/main.ts'], outfile: 'dist/webview.js', platform: 'browser', format: 'iife', target: 'chrome120', minify: true },
 ];
+// The browser harness's mock host runs the real review model (npm run harness); never packaged.
+if (existsSync('harness/host.ts')) {
+  builds.push({ ...common, entryPoints: ['harness/host.ts'], outfile: 'dist/harness-host.js', platform: 'browser', format: 'iife', target: 'chrome120' });
+}
 if (existsSync('test/e2e')) {
   builds.push({ ...common, entryPoints: ['test/e2e/runE2E.ts', 'test/e2e/suite.ts'], outdir: 'dist/test', platform: 'node', format: 'cjs', target: 'node20', external: ['vscode', 'mocha', '@vscode/test-electron'] });
 }

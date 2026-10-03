@@ -5,8 +5,12 @@
 import type { GraphEdge, GraphNode } from '../contract/graph';
 import type { RiskContribution, RiskScore } from '../contract/risk';
 import type { GraphSource } from '../protocol';
+import type { GraphIndex } from '../review/order';
+import type { ReviewSnapshot, Territory } from '../review/types';
 import { h, onActivate } from './dom';
+import type { Fog } from './fog';
 import { buildLegend } from './legend';
+import { fogIcon } from './render';
 import { ancestors, CHANGE_WORD, childrenOf, describeChildren, type Model } from './model';
 import { verb } from './render';
 
@@ -14,6 +18,17 @@ export interface SummaryHandlers {
   select(id: string): void;
   openAnchor(id: string, anchorIndex: number): void;
   clearSelection(): void;
+  /** Didactic: open the gate into a territory. */
+  enter?(id: string): void;
+  /** Switch the side pane to the Questions tab. */
+  showQuestions?(): void;
+}
+
+/** The review state the summary reflects (absent with an older host). */
+export interface SummaryReview {
+  snapshot: ReviewSnapshot;
+  index: GraphIndex;
+  fog: Fog;
 }
 
 export interface SummaryContext {
@@ -22,6 +37,7 @@ export interface SummaryContext {
   selected?: string;
   /** The selected node had been looked at before this selection. */
   seenBefore: boolean;
+  review?: SummaryReview;
 }
 
 const CODE_KINDS = new Set(['function', 'class', 'type']);
@@ -79,19 +95,24 @@ function overview(ctx: SummaryContext, handlers: SummaryHandlers): Node[] {
     externals ? h('li', { class: 'stat-external' }, h('strong', {}, String(externals)), externals === 1 ? ' repo outside uses this' : ' repos outside use this') : null,
   );
 
+  const didactic = ctx.review?.snapshot.mode === 'didactic';
   return [
     h('p', { class: 'eyebrow' }, 'Overview'),
     h('h2', { class: 'summary-title' }, 'What this PR touches'),
     stats,
-    h('h3', {}, 'Where to look first'),
-    h('p', { class: 'muted small' }, 'Riskiest first, by countable signals. Pick one to see its code.'),
-    h(
-      'ol',
-      { class: 'first-look' },
-      ...firstLook.map((n) => h('li', {}, nodeButton(n, model, handlers), h('p', { class: 'why' }, n.risk.why))),
-    ),
+    ...(didactic
+      ? mapSection(ctx, handlers)
+      : [
+          h('h3', {}, 'Where to look first'),
+          h('p', { class: 'muted small' }, 'Riskiest first, by countable signals. Pick one to see its code.'),
+          h(
+            'ol',
+            { class: 'first-look' },
+            ...firstLook.map((n) => h('li', {}, nodeButton(n, model, handlers), h('p', { class: 'why' }, n.risk.why))),
+          ),
+        ]),
     h('h3', {}, 'How to read the graph'),
-    buildLegend(),
+    buildLegend({ didactic }),
     h(
       'p',
       { class: 'muted small tips' },
@@ -136,6 +157,8 @@ function selectedView(node: GraphNode, ctx: SummaryContext, handlers: SummaryHan
 
   if (!isExternal) out.push(riskSection(node, ctx, handlers));
   out.push(h('p', { class: 'summary-text' }, node.summary));
+  const progress = territoryProgress(node, ctx, handlers);
+  if (progress) out.push(progress);
 
   const kids = childrenOf(model, node.id);
   if (kids.length) {
@@ -147,8 +170,89 @@ function selectedView(node: GraphNode, ctx: SummaryContext, handlers: SummaryHan
   out.push(...codeSection(node, handlers));
   out.push(...connections(node, ctx, handlers));
 
-  out.push(h('details', { class: 'legend-details' }, h('summary', {}, 'How to read the graph'), buildLegend()));
+  out.push(h('details', { class: 'legend-details' }, h('summary', {}, 'How to read the graph'), buildLegend({ didactic: ctx.review?.snapshot.mode === 'didactic' })));
   return out;
+}
+
+/** Didactic overview: the territories, explored or not, riskiest first. Progress is coverage. */
+function mapSection(ctx: SummaryContext, handlers: SummaryHandlers): Node[] {
+  const review = ctx.review!;
+  const { snapshot, index } = review;
+  const ts = [...snapshot.territories].sort((a, b) => index.riskOf(b.nodeId) - index.riskOf(a.nodeId) || index.indexOf(a.nodeId) - index.indexOf(b.nodeId));
+  const list = h('ul', { class: 'map-list' });
+  for (const t of ts) {
+    const node = ctx.model.byId.get(t.nodeId);
+    if (!node) continue;
+    const name = node.label;
+    let b: HTMLElement;
+    if (t.explored) {
+      b = h('button', { type: 'button', class: 'node-link', 'data-select': t.nodeId, 'data-focus-key': `map:${t.nodeId}` }, h('span', { class: 'plain-name' }, name), bandPill(ctx.model.risk.get(t.nodeId)));
+      onActivate(b, () => handlers.select(t.nodeId));
+    } else {
+      b = h('button', { type: 'button', class: 'node-link node-link--fog', 'data-enter': t.nodeId, 'data-focus-key': `map:${t.nodeId}`, 'aria-label': `Enter ${name}, unexplored territory` }, h('span', { class: 'plain-name' }, name), h('span', { class: 'fog-tag' }, 'unexplored'));
+      onActivate(b, () => handlers.enter?.(t.nodeId));
+    }
+    list.append(
+      h(
+        'li',
+        { class: t.explored ? 'is-explored' : 'is-fogged' },
+        h('span', { class: 'map-mark', 'aria-hidden': 'true' }, t.explored ? '✓' : fogIcon()),
+        b,
+        h('span', { class: 'map-count' }, t.questionsTotal ? `${t.questionsDone} of ${t.questionsTotal} questions` : ''),
+      ),
+    );
+  }
+  return [
+    h('h3', {}, 'The map'),
+    h('p', { class: 'muted small' }, `Explored ${snapshot.coverage.explored} of ${snapshot.coverage.total}. Each part of the map opens after one question about it: you predict, then you read.`),
+    list,
+  ];
+}
+
+const FAMILIARITY_WORD = { new: 'New to you', some: 'Somewhat familiar', known: 'You know it well' } as const;
+
+/** A territory's own progress: questions answered and the private confidence meter. */
+function territoryProgress(node: GraphNode, ctx: SummaryContext, handlers: SummaryHandlers): HTMLElement | null {
+  const review = ctx.review;
+  if (!review) return null;
+  const t: Territory | undefined = review.snapshot.territories.find((x) => x.nodeId === node.id);
+  if (!t) return null;
+  const sec = h('section', { class: 'progress-card', 'aria-label': 'Your progress (private)' });
+  sec.append(h('h3', {}, 'Your progress'));
+  const row = h('p', { class: 'progress-row' });
+  if (t.questionsTotal) {
+    row.append(`${t.questionsDone} of ${t.questionsTotal} questions answered. `);
+    if (handlers.showQuestions) {
+      const b = h('button', { type: 'button', class: 'inline-link inline-link--plain', 'data-focus-key': 'summary:questions' }, 'Show them');
+      onActivate(b, () => handlers.showQuestions!());
+      row.append(b);
+    }
+  } else {
+    row.append('No questions about it at this depth.');
+  }
+  sec.append(row);
+  // A meter only once there's something behind it: the reviewer said how familiar they are, or
+  // an earlier review left a record (confidence 0 means "never asked" today).
+  if (t.familiarity || t.confidence > 0) {
+    const pct = Math.round(Math.max(0, Math.min(1, t.confidence)) * 100);
+    const word = t.confidence < 0.35 ? 'Getting started' : t.confidence < 0.65 ? 'Building up' : 'Confident';
+    const meter = h('div', { class: 'confidence-meter', role: 'img', 'aria-label': `Confidence in ${node.label}: ${word.toLowerCase()}` });
+    const fill = h('span', { class: 'confidence-fill' });
+    fill.style.width = `${pct}%`;
+    meter.append(fill);
+    sec.append(
+      h(
+        'div',
+        { class: 'confidence' },
+        h('span', { class: 'confidence-label' }, 'Confidence'),
+        meter,
+        h('span', { class: 'confidence-word' }, word),
+      ),
+    );
+    if (t.familiarity) sec.append(h('p', { class: 'muted small' }, `${FAMILIARITY_WORD[t.familiarity]}, you said.`));
+  }
+  sec.append(h('p', { class: 'private-note' }, h('strong', {}, 'Private.'), ' Kept on this machine, never posted.'));
+  return sec;
 }
 
 function riskSection(node: GraphNode, ctx: SummaryContext, handlers: SummaryHandlers): HTMLElement {

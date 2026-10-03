@@ -234,3 +234,22 @@ body.harness-compact .harness-stage {
 body.harness-compact .harness-log {
   display: none;
 }
+
+.harness-export {
+  border-top: 1px solid var(--vscode-panel-border);
+  padding: 4px 10px;
+  max-height: 40%;
+  overflow: auto;
+}
+.harness-export pre {
+  margin: 4px 0 0;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+.harness-bar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+}

@@ -210,8 +210,29 @@ export class Workbench {
   async clickWebview(selector: string, opts: PointOptions = {}): Promise<Point> {
     await this.scrollIntoView(selector, opts);
     const p = await this.webviewPoint(selector, opts);
+    await this.assertUncovered(p, selector);
     await this.click(p);
     return p;
+  }
+
+  /**
+   * The webview's own hit test can't see VS Code UI drawn over the webview (a notification toast,
+   * a menu): a click there would land on that instead. Waits a moment for it to go, then throws.
+   */
+  private async assertUncovered(p: Point, what: string): Promise<void> {
+    const probe = `(() => {
+      const e = document.elementFromPoint(${p.x}, ${p.y});
+      if (!e || e.tagName === 'IFRAME') return '';
+      const cls = typeof e.className === 'string' ? e.className.trim().split(/\\s+/).slice(0, 3).join('.') : '';
+      return e.tagName.toLowerCase() + (cls ? '.' + cls : '') + (e.closest('.notification-toast') ? ' (a notification)' : '');
+    })()`;
+    let hit = '';
+    for (let i = 0; i < 10; i++) {
+      hit = await this.evalPage<string>(probe);
+      if (!hit) return;
+      await sleep(100);
+    }
+    throw new Error(`cannot click ${what}: VS Code draws ${hit} over it at ${p.x},${p.y}`);
   }
 
   /**
@@ -282,6 +303,14 @@ export class Workbench {
     await this.conn.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
   }
 
+  /**
+   * Types text into whatever has keyboard focus, as an input method commits it: one input event,
+   * replacing any selection. Click the text box first.
+   */
+  async type(text: string): Promise<void> {
+    await this.conn.send('Input.insertText', { text });
+  }
+
   private async evalIn<T>(sessionId: string, fnSource: string, args: unknown[]): Promise<T> {
     const r = await this.conn.send<{ result: { value: T }; exceptionDetails?: { exception?: { description?: string }; text: string } }>(
       'Runtime.evaluate',
@@ -345,13 +374,28 @@ const PICK = `const all = [...d.querySelectorAll(selector)];
   const el = text === null ? all[0] : all.find((e) => e.textContent.trim() === text);
   if (!el) return { error: 'no element matches' + (text === null ? '' : ' with text ' + JSON.stringify(text) + ' (found ' + JSON.stringify(all.map((e) => e.textContent.trim())) + ')') };`;
 
-/** In view, or where to turn the wheel (and how far) to bring it there. */
+/**
+ * In view, or where to turn the wheel (and how far) to bring it there. "In view" means inside the
+ * window and inside every scroll container around it: a card scrolled up under the pane's edge is
+ * within the window but clipped, and a click there lands on whatever is drawn above it.
+ */
 const WHEEL_TOWARDS = `(d, w, frame, selector, text) => {
   ${PICK}
   const r = el.getBoundingClientRect();
-  if (r.top >= 0 && r.bottom <= w.innerHeight) return { inView: true };
+  const scrolls = (s) => s.scrollHeight > s.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(s).overflowY);
+  let top = 0, bottom = w.innerHeight;
   for (let s = el.parentElement; s; s = s.parentElement) {
-    if (!(s.scrollHeight > s.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(s).overflowY))) continue;
+    if (!scrolls(s)) continue;
+    const b = s.getBoundingClientRect();
+    top = Math.max(top, b.top);
+    bottom = Math.min(bottom, b.bottom);
+  }
+  const fits = r.top >= top - 1 && r.bottom <= bottom + 1;
+  // Taller than the space it has: enough of it showing will do.
+  const tallAndShowing = r.height > bottom - top && Math.min(r.bottom, bottom) - Math.max(r.top, top) >= Math.min(40, (bottom - top) / 2);
+  if (fits || tallAndShowing) return { inView: true };
+  for (let s = el.parentElement; s; s = s.parentElement) {
+    if (!scrolls(s)) continue;
     const b = s.getBoundingClientRect();
     const top = Math.max(b.top, 0), bottom = Math.min(b.bottom, w.innerHeight);
     const left = Math.max(b.left, 0), right = Math.min(b.right, w.innerWidth);

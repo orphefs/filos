@@ -4,7 +4,8 @@
 
 import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
-import type { HostToWebview, WebviewToHost } from '../protocol';
+import { DEPTHS, type Depth } from '../contract/questions';
+import type { HostToWebview, ReviewAction, WebviewToHost } from '../protocol';
 
 export const PANEL_VIEW_TYPE = 'filos.review';
 
@@ -47,7 +48,7 @@ export class ReviewPanel implements vscode.Disposable {
     panel.webview.html = shellHtml(panel.webview, dist);
     this.disposables.push(
       panel.webview.onDidReceiveMessage((raw: unknown) => {
-        const msg = asMessage(raw);
+        const msg = parseWebviewMessage(raw);
         if (!msg) {
           this.log.warn(`webview sent an unrecognised message: ${safeJson(raw)}`);
           return;
@@ -109,13 +110,40 @@ function shellHtml(webview: vscode.Webview, dist: vscode.Uri): string {
 </html>`;
 }
 
-const WEBVIEW_TYPES = new Set<WebviewToHost['type']>(['ready', 'select', 'openAnchor', 'stateChanged', 'action', 'rendered']);
+const VIEW_TYPES = new Set<string>(['ready', 'select', 'openAnchor', 'stateChanged', 'action', 'rendered']);
 
-/** Shape check at the trust boundary: the webview is ours, but its messages are still just data. */
-function asMessage(raw: unknown): WebviewToHost | undefined {
+/** Every ReviewAction type; the host applies these to the review model. */
+export const REVIEW_ACTION_TYPES: ReadonlySet<string> = new Set<ReviewAction['type']>([
+  'setMode',
+  'setDepth',
+  'enter',
+  'familiarity',
+  'cancelGate',
+  'answer',
+  'selfCheck',
+  'commentAction',
+  'amend',
+  'thread',
+  'adoptProposal',
+  'addNote',
+  'draftWithAgent',
+  'post',
+  'exportReview',
+]);
+
+/** Free text from the webview (answers, notes, amended bodies) is bounded: the webview is ours, but the text may be pasted. */
+export const MAX_ACTION_TEXT = 50_000;
+
+/**
+ * Shape check at the trust boundary: the webview is ours, but its messages are still just data.
+ * Review actions come back as fresh objects with only their known fields.
+ */
+export function parseWebviewMessage(raw: unknown): WebviewToHost | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const m = raw as Record<string, unknown>;
-  if (typeof m.type !== 'string' || !WEBVIEW_TYPES.has(m.type as WebviewToHost['type'])) return undefined;
+  if (typeof m.type !== 'string') return undefined;
+  if (REVIEW_ACTION_TYPES.has(m.type)) return parseReviewAction(m);
+  if (!VIEW_TYPES.has(m.type)) return undefined;
   const strs = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === 'string');
   switch (m.type) {
     case 'select':
@@ -132,6 +160,46 @@ function asMessage(raw: unknown): WebviewToHost | undefined {
       return strs(m.visibleNodes) && strs(m.expanded) ? (m as unknown as WebviewToHost) : undefined;
     default:
       return m as unknown as WebviewToHost;
+  }
+}
+
+function parseReviewAction(m: Record<string, unknown>): ReviewAction | undefined {
+  const id = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 500;
+  const text = (v: unknown): v is string => typeof v === 'string' && v.length <= MAX_ACTION_TEXT;
+  const optional = <T>(v: unknown, ok: (x: unknown) => x is T): boolean => v === undefined || ok(v);
+  switch (m.type) {
+    case 'setMode':
+      return m.mode === 'fast' || m.mode === 'didactic' ? { type: 'setMode', mode: m.mode } : undefined;
+    case 'setDepth':
+      return DEPTHS.includes(m.depth as Depth) ? { type: 'setDepth', depth: m.depth as Depth } : undefined;
+    case 'enter':
+      return id(m.nodeId) ? { type: 'enter', nodeId: m.nodeId } : undefined;
+    case 'familiarity':
+      return id(m.nodeId) && (m.level === 'new' || m.level === 'some' || m.level === 'known') ? { type: 'familiarity', nodeId: m.nodeId, level: m.level } : undefined;
+    case 'cancelGate':
+      return { type: 'cancelGate' };
+    case 'answer':
+      if (!id(m.questionId) || !optional(m.choiceId, id) || !optional(m.text, text)) return undefined;
+      return { type: 'answer', questionId: m.questionId, ...(m.choiceId !== undefined ? { choiceId: m.choiceId as string } : {}), ...(m.text !== undefined ? { text: m.text as string } : {}) };
+    case 'selfCheck':
+      return id(m.questionId) && typeof m.gotIt === 'boolean' ? { type: 'selfCheck', questionId: m.questionId, gotIt: m.gotIt } : undefined;
+    case 'commentAction':
+      return id(m.id) && (m.action === 'accept' || m.action === 'reject' || m.action === 'reopen') ? { type: 'commentAction', id: m.id, action: m.action } : undefined;
+    case 'amend':
+      return id(m.id) && text(m.body) ? { type: 'amend', id: m.id, body: m.body } : undefined;
+    case 'thread':
+      return id(m.id) && text(m.text) ? { type: 'thread', id: m.id, text: m.text } : undefined;
+    case 'adoptProposal':
+      return id(m.id) && Number.isInteger(m.index) && (m.index as number) >= 0 ? { type: 'adoptProposal', id: m.id, index: m.index as number } : undefined;
+    case 'addNote':
+      if (!text(m.text) || !optional(m.nodeId, id)) return undefined;
+      return { type: 'addNote', text: m.text, ...(m.nodeId !== undefined ? { nodeId: m.nodeId as string } : {}) };
+    case 'draftWithAgent':
+    case 'post':
+    case 'exportReview':
+      return { type: m.type };
+    default:
+      return undefined;
   }
 }
 

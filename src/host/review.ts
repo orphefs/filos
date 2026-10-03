@@ -5,18 +5,23 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import * as vscode from 'vscode';
-import { createProvider, effectiveBudgetUsd, effectiveTimeoutSeconds, ProviderError, type AgentProvider, type ProviderConfig } from '../agent';
+import { createProvider, ProviderError, type AgentProvider, type ProviderConfig } from '../agent';
 import { resolveCommand } from '../agent/exec';
 import { safeProgressText } from '../agent/progress';
 import type { ReviewGraph } from '../contract/graph';
 import { validateGraph } from '../contract/validate';
-import type { ErrorAction, GraphSource, HostToWebview, WebviewToHost } from '../protocol';
+import type { ErrorAction, GraphSource, HostToWebview, ReviewAction, WebviewToHost } from '../protocol';
+import type { ReviewSnapshot } from '../review/types';
 import { CodePane } from './codePane';
+import { readGhPath, readProviderConfig } from './config';
+import { repoKeyFor } from './confidenceStore';
 import { readDependencyIndex } from './depIndex';
 import { describeAgentError } from './errors';
 import { OutlineFoldingProvider } from './folding';
 import * as git from './git';
+import { detectPullRequest, type PullRequestLookup } from './github';
 import { ReviewPanel } from './panel';
+import { ReviewState } from './reviewState';
 import { materialiseSample, type SampleRepo } from './sample';
 import { ReviewSession, type RenderedInfo, type ReviewTarget } from './session';
 
@@ -51,6 +56,13 @@ export class ReviewController implements vscode.Disposable {
   private agentRun?: AbortController;
   private lastProvider?: AgentProvider;
   private waiters: RenderWaiter[] = [];
+  /** Questionnaire, comments and didactic state of the loaded graph. */
+  private review?: ReviewState;
+  /**
+   * Tests answer the posting confirmation themselves (a modal would block the test run).
+   * Undefined: the real modal.
+   */
+  confirmOverride?: (message: string, detail: string) => boolean;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -71,6 +83,10 @@ export class ReviewController implements vscode.Disposable {
 
   get webviewReady(): boolean {
     return this.panel.isReady;
+  }
+
+  get currentReview(): ReviewState | undefined {
+    return this.review;
   }
 
   // ---- commands -------------------------------------------------------------------------------
@@ -116,6 +132,8 @@ export class ReviewController implements vscode.Disposable {
     if (this.session !== session) return; // superseded while git ran
     const index = readDependencyIndex(repo.repoRoot);
     const warnings = [...git.diffWarnings(diff), ...(index.warning ? [index.warning] : [])];
+    session.diff = diff;
+    session.dependencyIndex = index.text;
     await this.runAgent(session, { diff, dependencyIndex: index.text, note: `Comparing ${repo.head} with ${repo.base}`, warnings });
   }
 
@@ -180,25 +198,60 @@ export class ReviewController implements vscode.Disposable {
     if (index.warning) warnings.push(index.warning);
     const subjects = await git.commitSubjects(root, base, 'HEAD');
     const prTitle = subjects.length === 1 ? subjects[0] : head;
+    const repoRoot = realpathSync(root);
+    const repoKey = repoKeyFor('branch', repoRoot, await git.originUrl(root));
 
     this.cancelAgent();
-    const session = this.startSession({ kind: 'branch', repoRoot: realpathSync(root), base, head, prTitle });
+    const session = this.startSession({ kind: 'branch', repoRoot, base, head, prTitle }, repoKey);
+    session.diff = diff;
+    session.dependencyIndex = index.text;
+    // gh takes a second or two; the agent takes minutes. Look the PR up while it works.
+    session.pullRequest = this.lookUpPullRequest(repoRoot);
     await this.runAgent(session, { diff, dependencyIndex: index.text, note, warnings });
   }
 
   // ---- selection ------------------------------------------------------------------------------
 
-  /** Same path as a click in the graph. */
+  /** Same path as a click in the graph. In didactic mode, a node still in fog opens no code. */
   select(id: string, anchorIndex?: number): Promise<void> {
     const s = this.session;
-    if (!s?.graph) return Promise.resolve();
+    if (!s?.graph || !this.mayOpen(id)) return Promise.resolve();
     return this.codePane.show(id, anchorIndex);
   }
 
   /** Host-driven selection (tests, commands): move the graph's selection too. */
   selectFromHost(id: string): Promise<void> {
+    const s = this.session;
+    if (!s?.graph || !this.mayOpen(id)) return Promise.resolve();
     this.post({ type: 'select', id });
-    return this.select(id);
+    return this.codePane.show(id);
+  }
+
+  /** Asks the review model (which also closes an open gate); true when there's no review yet. */
+  private mayOpen(id: string): boolean {
+    const r = this.review;
+    if (!r || r.session !== this.session) return true;
+    if (r.select(id)) return true;
+    this.log.debug(`select ${id}: in fog (didactic mode), no code opened`);
+    return false;
+  }
+
+  /**
+   * A questionnaire, comment or didactic action, from the webview or a test. Resolves once any agent
+   * call or post it started has finished; failures are shown, never thrown.
+   */
+  async applyReviewAction(action: ReviewAction): Promise<void> {
+    const r = this.review;
+    if (!r || r.session !== this.session) {
+      this.log.debug(`review action ${action.type} with no review loaded`);
+      return;
+    }
+    try {
+      await r.apply(action);
+    } catch (e) {
+      this.log.error(`review action ${action.type}: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
+      void vscode.window.showErrorMessage(`Filos: ${safeProgressText(e instanceof Error ? e.message : String(e), 200)}`, 'Show Log').then((c) => c && this.log.show());
+    }
   }
 
   /** Resolves with the first rendered report (already received or upcoming) that matches. */
@@ -246,6 +299,7 @@ export class ReviewController implements vscode.Disposable {
     switch (msg.type) {
       case 'ready':
         if (s) this.panel.post(s.snapshot());
+        if (s && this.review?.session === s) this.review.resend();
         return;
       case 'select':
         void this.select(msg.id);
@@ -272,11 +326,15 @@ export class ReviewController implements vscode.Disposable {
         for (const w of ready) w.resolve(info);
         return;
       }
+      default:
+        void this.applyReviewAction(msg);
+        return;
     }
   }
 
-  private startSession(target: ReviewTarget): ReviewSession {
-    const session = new ReviewSession(target, this.context.workspaceState);
+  private startSession(target: ReviewTarget, repoKey?: string): ReviewSession {
+    this.endReview();
+    const session = new ReviewSession(target, this.context.workspaceState, repoKey ?? (target.kind === 'sample' ? repoKeyFor('sample', target.repoRoot) : target.repoRoot));
     if (this.session) session.inheritOutlines(this.session);
     this.session = session;
     this.codePane.setSession(session);
@@ -296,7 +354,58 @@ export class ReviewController implements vscode.Disposable {
     for (const w of warnings) this.log.warn(`graph: ${w}`);
     this.log.info(`loaded ${source} graph: ${graph.nodes.length} nodes, ${graph.edges.length} edges, ${graph.files.length} file outlines`);
     this.post(session.snapshot());
+    this.startReview(session, graph, source);
     this.warmUp(session, graph);
+  }
+
+  /** The questionnaire for a freshly loaded graph; its first snapshot follows the 'load' message. */
+  private startReview(session: ReviewSession, graph: ReviewGraph, source: GraphSource): void {
+    this.endReview();
+    const review: ReviewState = new ReviewState(
+      {
+        log: this.log,
+        globalState: this.context.globalState,
+        extensionPath: this.context.extensionPath,
+        send: (snapshot: ReviewSnapshot) => {
+          if (this.review === review) this.post({ type: 'review', review: snapshot });
+        },
+        provider: () => {
+          const config = readProviderConfig();
+          const provider = createProvider({ ...config, onRawLine: (line) => this.log.trace(`[cli] ${line.length > 2000 ? line.slice(0, 2000) + '…' : line}`) });
+          this.lastProvider = provider;
+          return { provider, config };
+        },
+        openLogin: () => this.openLoginTerminal(),
+        ghPath: () => readGhPath(),
+        confirm: async (message, detail, action) => {
+          if (this.confirmOverride) return this.confirmOverride(message, detail);
+          return (await vscode.window.showWarningMessage(message, { modal: true, detail }, action)) === action;
+        },
+        besideColumn: () => Math.min((this.panel.webviewPanel?.viewColumn ?? vscode.ViewColumn.One) + 1, vscode.ViewColumn.Nine) as vscode.ViewColumn,
+      },
+      session,
+      graph,
+      source,
+    );
+    this.review = review;
+    review.start();
+  }
+
+  /** Drops the current review: its agent calls are cancelled (a post already confirmed still finishes). */
+  private endReview(): void {
+    this.review?.dispose();
+    this.review = undefined;
+  }
+
+  /** Never rejects: any failure is a reason there's nothing to post to. */
+  private lookUpPullRequest(repoRoot: string): Promise<PullRequestLookup> {
+    let gh: string;
+    try {
+      gh = readGhPath();
+    } catch (e) {
+      return Promise.resolve({ ok: false, reason: safeProgressText(e instanceof Error ? e.message : String(e), 240) });
+    }
+    return detectPullRequest({ gh, cwd: repoRoot });
   }
 
   /**
@@ -460,6 +569,7 @@ export class ReviewController implements vscode.Disposable {
   private onPanelClosed(): void {
     // Closing the panel ends the review: stop any agent run (it costs money) and drop the folds.
     this.cancelAgent();
+    this.endReview();
     this.codePane.setSession(undefined);
     this.session = undefined;
     this.folding.refresh();
@@ -467,40 +577,11 @@ export class ReviewController implements vscode.Disposable {
 
   dispose(): void {
     this.cancelAgent();
+    this.endReview();
     this.panel.dispose();
     this.codePane.dispose();
     this.folding.dispose();
   }
-}
-
-/**
- * Settings that choose what Filos runs and how much it may spend come from user settings only.
- * A workspace's .vscode/settings.json arrives with the branch under review, so its values are
- * ignored here even on hosts that don't enforce the settings' machine scope.
- */
-function readProviderConfig(): ProviderConfig {
-  const c = vscode.workspace.getConfiguration('filos');
-  const user = <T>(key: string): T | undefined => {
-    const i = c.inspect<T>(key);
-    return i?.globalValue ?? i?.defaultValue;
-  };
-  const id = c.get<string>('provider', 'claude');
-  const model = user<unknown>('claude.model');
-  return {
-    id: id as ProviderConfig['id'],
-    claudePath: resolveExecutable(String(user<unknown>('claude.path') ?? 'claude')),
-    model: typeof model === 'string' && model ? model : undefined,
-    maxBudgetUsd: effectiveBudgetUsd(user<unknown>('claude.maxBudgetUsd')),
-    timeoutSeconds: effectiveTimeoutSeconds(user<unknown>('agentTimeoutSeconds')),
-  };
-}
-
-/** A name on PATH, an absolute path, or "~/…". A relative path would depend on some cwd, so it is refused. */
-function resolveExecutable(p: string): string {
-  const v = p.trim() || 'claude';
-  if (v === '~' || v.startsWith('~/') || v.startsWith('~\\')) return join(homedir(), v.slice(1));
-  if (isAbsolute(v) || !/[\\/]/.test(v)) return v;
-  throw new Error(`the setting "filos.claude.path" must be a command name on PATH, an absolute path, or start with ~/ ("${v}" is a relative path).`);
 }
 
 /** Head-revision reader for validation, confined to the repo. */

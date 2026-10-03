@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import Ajv from 'ajv';
 import { DEFAULT_BUDGET_USD, DEFAULT_TIMEOUT_SECONDS, effectiveBudgetUsd, effectiveTimeoutSeconds, MAX_TIMEOUT_SECONDS } from '../../src/agent';
-import { ALLOWED_TOOLS, buildClaudeArgs, childEnv, classifyFailure, extractGraphJson, progressFor, repoReader, type CliResult } from '../../src/agent/claudeCli';
+import { AGENT_TASKS, ALLOWED_TOOLS, buildClaudeArgs, childEnv, classifyFailure, extractGraphJson, extractJson, progressFor, repoReader, taskMarker, type CliResult } from '../../src/agent/claudeCli';
 import { resolveCommand } from '../../src/agent/exec';
 import { MAX_PROGRESS_CHARS, safeProgressText } from '../../src/agent/progress';
 import { buildPrompt, diffStats, MAX_DIFF_CHARS, SYSTEM_PROMPT } from '../../src/agent/prompt';
@@ -36,6 +36,22 @@ describe('buildClaudeArgs', () => {
       assert.ok(!args.includes('bypassPermissions') && !args.includes('acceptEdits'));
     }
     assert.deepEqual([...ALLOWED_TOOLS], ['Read', 'Grep', 'Glob']);
+  });
+
+  it("tools 'none' (grading, threads) passes an empty --tools= list: no Read, never Bash/Edit/Write", () => {
+    const args = buildClaudeArgs({ ...base, tools: 'none' });
+    assert.deepEqual(toolsOf(args), ['']);
+    assert.ok(args.includes('--tools='), 'the "=" form, so the empty value is never taken from the next argument');
+    assert.ok(!args.some((a) => /\bRead\b/.test(a)) && !NEVER.test(args.join(' ')));
+    assert.deepEqual(toolsOf(buildClaudeArgs({ ...base, tools: 'read' })), ['Read,Grep,Glob']);
+    // Everything else is the same as for the comprehension pass.
+    const without = (xs: string[]) => xs.filter((a) => !a.startsWith('--tools'));
+    assert.deepEqual(without(args), without(buildClaudeArgs(base)));
+  });
+
+  it('task markers name exactly the known tasks', () => {
+    assert.deepEqual([...AGENT_TASKS], ['questions', 'evaluate', 'draftComments', 'thread']);
+    assert.equal(taskMarker('evaluate'), 'Filos task: evaluate');
   });
 
   it('runs non-interactively, isolated from MCP, project settings and session storage', () => {
@@ -113,6 +129,8 @@ describe('classifyFailure', () => {
       'Invalid API key · Please run /login',
       'OAuth token has expired. Please obtain a new token or refresh your existing token.',
       'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}',
+      // Seen live (CLI 2.1.276, 2026-10-03) as a result with subtype "success", is_error true, terminal_reason "api_error".
+      'Failed to authenticate: OAuth session expired and could not be refreshed',
     ]) {
       assert.equal(kind({ result: r({ result: message, terminal_reason: 'api_error' }), exitCode: 1, stderr: '' }), 'authExpired', message);
       assert.equal(kind({ exitCode: 1, stderr: message }), 'authExpired', `stderr: ${message}`);
@@ -124,6 +142,13 @@ describe('classifyFailure', () => {
   it('recognises the spending cap', () => {
     assert.equal(kind({ result: r({ subtype: 'error_max_budget_usd', errors: ['Reached maximum budget ($0.5)'] }), exitCode: 1, stderr: '', maxBudgetUsd: 0.5 }), 'budget');
     assert.equal(kind({ result: r({ result: 'Exceeded the USD budget' }), exitCode: 1, stderr: '' }), 'budget');
+  });
+
+  it('names the contract that structured output missed', () => {
+    const r1 = classifyFailure({ result: r({ subtype: 'error_max_structured_output_retries' }), exitCode: 1, stderr: '' })!;
+    assert.match(r1.message, /review-graph contract/);
+    const r2 = classifyFailure({ result: r({ subtype: 'error_max_structured_output_retries' }), exitCode: 1, stderr: '', contract: 'grading contract' })!;
+    assert.match(r2.message, /the grading contract\.$/);
   });
 
   it('maps exhausted structured-output retries to contract, everything else to failed', () => {
@@ -146,7 +171,8 @@ describe('extractGraphJson', () => {
     assert.deepEqual(extractGraphJson(res({ result: 'The graph is ' + JSON.stringify(g) + ' as requested.' })), g);
   });
   it('fails as contract when there is no JSON at all', () => {
-    assert.throws(() => extractGraphJson(res({ result: 'Sorry, I could not do that.' })), (e: unknown) => e instanceof ProviderError && e.kind === 'contract');
+    assert.throws(() => extractGraphJson(res({ result: 'Sorry, I could not do that.' })), (e: unknown) => e instanceof ProviderError && e.kind === 'contract' && /no review graph/.test(e.message));
+    assert.throws(() => extractJson(res({ result: '' }), 'grade'), (e: unknown) => e instanceof ProviderError && e.kind === 'contract' && /no grade/.test(e.message));
   });
 });
 
@@ -239,6 +265,9 @@ describe('helpers', () => {
     ] } };
     assert.deepEqual(progressFor(msg, FAKE_REPO), ['Reading money/round.ts', 'Searching for “roundToCents”', 'Listing **/*.ts']);
     assert.deepEqual(progressFor({ type: 'user' }, FAKE_REPO), []);
+    const answer = { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'StructuredOutput', input: {} }] } };
+    assert.deepEqual(progressFor(answer, FAKE_REPO), ['Writing the review graph…']);
+    assert.deepEqual(progressFor(answer, FAKE_REPO, 'Writing feedback…'), ['Writing feedback…']);
   });
 
   it('progressFor never shows a path outside the repo, or link syntax from the agent', () => {

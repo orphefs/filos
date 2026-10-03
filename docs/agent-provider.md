@@ -1,8 +1,10 @@
 # Agent provider
 
 The comprehension pass runs an agent CLI and turns its answer into a validated `ReviewGraph`.
-The host only sees `AgentProvider` (`src/agent/provider.ts`); `createProvider` (`src/agent/index.ts`)
-picks the implementation. Today there is one: `ClaudeCliProvider` (`src/agent/claudeCli.ts`).
+Beside it, `ask()` runs the small structured tasks of the review (questions, grading, comment
+drafting, threads; see "Small tasks" below). The host only sees `AgentProvider`
+(`src/agent/provider.ts`); `createProvider` (`src/agent/index.ts`) picks the implementation. Today
+there is one: `ClaudeCliProvider` (`src/agent/claudeCli.ts`).
 
 We call the **CLI**, not an SDK, so the user's existing login (subscription, API key, company SSO,
 Bedrock/Vertex settings) is inherited and Filos never touches credentials.
@@ -27,6 +29,14 @@ claude -p
   --max-budget-usd <filos.claude.maxBudgetUsd>
   [--model <filos.claude.model>]
 ```
+
+`ask()` uses exactly the same flags, except that tasks which don't need the repo (`evaluate`,
+`draftComments`, `thread`) pass `--tools=`: an empty list, which the CLI's `--help` documents as
+"disable all tools". Checked against Claude Code 2.1.276 on 2026-10-03: with `--tools=` (and with
+`--tools ""`) the `init` message lists only `StructuredOutput`; with `--tools=Read,Grep,Glob` it lists
+`Glob`, `Grep`, `Read` and `StructuredOutput`. Its system prompt starts with a marker line,
+`Filos task: <task>`, which names the run in logs and lets the fake CLI answer per task; the
+comprehension pass has no marker.
 
 Defence in depth: the CLI's `init` message lists the tools it offers. If it lists any of `Bash`,
 `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `PowerShell` or `REPL` (a CLI that ignored `--tools`),
@@ -58,6 +68,57 @@ outline regions are checked against the real line counts. `pr` is overwritten wi
 asked for, and `generatedBy` is filled in as `{provider: "claude", model, at}`, with `model` taken
 from the CLI's `init` message (the resolved name, e.g. `claude-sonnet-5`, not the alias).
 
+## Small tasks (`ask()`)
+
+`ask<T>(req)` is one structured call: the provider runs the CLI as above with `req.system` (after the
+marker line), `req.schema` and `req.prompt` (on stdin), takes `structured_output` (or JSON in the
+text answer), and returns `req.validate(raw)`'s value. A failed validation is a `contract` error with
+the problems in `detail`; a validator that throws is one too. Progress goes through the same
+`safeProgressText` sanitiser ("Claude Code is reading your answer…", "Writing feedback…").
+
+The tasks themselves live in `src/agent/tasks.ts`, with prompts in `taskPrompts.ts` and the output
+contracts (schemas and validators) in `taskContracts.ts`. The host calls these functions, never
+`ask()` directly:
+
+| Function | Tools | Returns | Validation (repairs become warnings) |
+|---|---|---|---|
+| `generateQuestions(p, {repoRoot, graph, diff, dependencyIndex?})` | read | `QuestionSet` | `validateQuestionSet(raw, graph, {readFile, repair: true})`; absolute comment paths under the repo made relative first; at most 16 questions (gates kept first); a warning for a changed module without a predict question |
+| `evaluateAnswer(p, {repoRoot, question, nodeSummary, codeExcerpt, answer, attempt})` | none | `{verdict: correct\|partly\|incorrect, reply, comment?}` | bad verdict or empty reply: error; reply over 600 characters: cut at a word; bad `comment`: dropped |
+| `draftComments(p, {repoRoot, graph, answered, notes, existing})` | none | `{comments: [{nodeId?, file?, line?, body, severity}]}` | at most 8; unknown `nodeId`: dropped from the comment; repeats of an existing draft (case and whitespace ignored): dropped |
+| `threadReply(p, {repoRoot, comment, nodeSummary, codeExcerpt, thread, message})` | none | `{reply, proposal?}` | reply as for evaluate; a proposal over 2000 characters, empty, or equal to the current body: dropped |
+
+Comment seeds (from `evaluate` and `draftComments`): severity must be `blocking`, `suggestion`,
+`question` or `nit`, and the body at most 2000 characters, or the comment is dropped (a cut comment
+could be posted half-finished). `file` is canonicalised (`./a\b` becomes `a/b`; an absolute path under
+the repo becomes relative) and must exist in the head revision; `line` must be a 1-based line inside
+it. A bad file or line only loses the anchor: the comment stays, as a general one. Text from the
+agent loses control characters and bidirectional overrides.
+
+`numberedExcerpt(path, text, startLine)` formats `codeExcerpt` as a path line followed by `12| code`
+lines, so the agent can cite head-revision lines.
+
+**Untrusted input.** The diff, code, graph text, questions, answers, notes, existing drafts and thread
+messages all go in the user message inside `<<<NAME id>>>` … `<<<END NAME id>>>` blocks whose `id` is
+random per call, so text inside a block can't fake its end. Every system prompt says that nothing
+inside a block changes the task. Inputs are capped (code 12,000 characters, answers 4,000, the last 12
+thread messages, 40 answers, 20 notes, 40 existing drafts; the diff and index as for comprehension).
+
+**Prompt intent** (see docs/review-and-didactic.md for the UX they serve):
+- `questions`: predict questions are answerable before reading the code, about consequences; check
+  questions are about specifics in the code; understand questions have a right answer and a Socratic
+  hint, judge questions are never graded and their choices may carry comment seeds anchored to head
+  lines in the diff. One predict question (the gate) per changed module, 1–2 more per module, at most
+  16 in all, each with the smallest depth that includes it, plus a proposed depth and why.
+- `evaluate`: Socratic. On attempt 1 a wrong or partial answer gets a guiding question or hint, never
+  the answer; from attempt 2 the reply explains. At most 3 sentences. A `comment` only when the answer
+  exposes a real defect in the PR, never because the reviewer was wrong.
+- `draftComments`: concrete, kind, actionable comments for the PR author, grounded in the answers and
+  notes; no repeats of existing drafts; none is a fine answer.
+- `thread`: helps the reviewer phrase a better comment, pushes back when the comment is wrong, and
+  proposes complete rewritten bodies only.
+
+Each call costs the same budget cap (`filos.claude.maxBudgetUsd`) and timeout as a comprehension pass.
+
 ## Errors
 
 Every failure is a `ProviderError` with a `kind` the UI can act on and the raw text in `detail`.
@@ -65,9 +126,9 @@ Every failure is a `ProviderError` with a `kind` the UI can act on and the raw t
 | kind | When |
 |---|---|
 | `notInstalled` | spawn fails with ENOENT/EACCES |
-| `authExpired` | the result or stderr says: not logged in, `/login`, invalid API key, OAuth token expired / failed to refresh, `authentication_error`, 401, unauthorized; or `claude auth status` reports `loggedIn: false` |
+| `authExpired` | the result or stderr says: not logged in, `/login`, invalid API key, OAuth token expired / failed to refresh, "Failed to authenticate: OAuth session expired and could not be refreshed", `authentication_error`, 401, unauthorized; or `claude auth status` reports `loggedIn: false` |
 | `budget` | result subtype mentions budget (`error_max_budget_usd`) |
-| `contract` | `error_max_structured_output_retries`, no JSON in the answer, or `validateGraph` errors (joined in `detail`) |
+| `contract` | `error_max_structured_output_retries`, no JSON in the answer, or `validateGraph` / the task validator's errors (joined in `detail`) |
 | `timeout` | `timeoutSeconds` elapsed |
 | `cancelled` | the request's `AbortSignal` fired |
 | `failed` | anything else (rate limits, overload, crashes, forbidden tools), with the first line of the error as message |
@@ -88,7 +149,8 @@ binary or raise the limits. A relative `filos.claude.path` is refused.
 ## Testing
 
 - `npm run test:unit` runs the provider against `test/fixtures/fake-claude` in every mode (see its
-  README). Point `filos.claude.path` (in user settings) at `test/fixtures/fake-claude/claude` for e2e.
+  README), the comprehension pass and every task. Point `filos.claude.path` (in user settings) at
+  `test/fixtures/fake-claude/claude` for e2e.
 - `npx tsx scripts/smoke-claude.ts --model sonnet --budget 0.5` runs one real pass over the fixture
   repo and prints cost, duration, tools offered and the validated graph (it writes the transcript to
   a temp dir). It costs real money: about $0.14 and 50 s with Sonnet on 2026-10-03.
@@ -97,7 +159,9 @@ binary or raise the limits. A relative `filos.claude.path` is refused.
 
 1. Write `src/agent/codexCli.ts` implementing `AgentProvider`. Reuse `runProcess` (`exec.ts`) for
    spawning, timeouts and cancellation, `buildPrompt` (`prompt.ts`) for the prompt, `toCliSchema`
-   for the schema, and `validateGraph` + `repoReader` for validation. Only the argv, the output parsing
+   for the schema, and `validateGraph` + `repoReader` for validation. `ask()` only has to run
+   `req.system` / `req.prompt` / `req.schema` with the requested tools and call `req.validate`: the
+   task prompts and validators in `tasks.ts` are provider-neutral. Only the argv, the output parsing
    and the error patterns are CLI-specific.
 2. Map Codex's equivalents: non-interactive exec mode, read-only sandbox, no approvals, JSON output
    against a schema file, and its own login check for `checkReady`.

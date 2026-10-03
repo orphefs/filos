@@ -1,0 +1,68 @@
+{
+  "contractVersion": "0.1",
+  "depth": {
+    "proposed": "standard",
+    "why": "roundToCents changes results on half-cent ties for 2 in-repo callers and 1 external consumer, and no test covers ties."
+  },
+  "questions": [
+    {
+      "id": "q-money-predict",
+      "nodeId": "money",
+      "stage": "predict",
+      "purpose": "understand",
+      "depth": "skim",
+      "prompt": "roundToCents now uses banker's rounding. What happens to an amount that lands exactly on half a cent, such as 2.345?",
+      "choices": [
+        { "id": "a", "text": "It rounds up to 2.35, as before.", "correct": false, "explain": "That was the old half-away-from-zero behaviour; ties now go to the even cent." },
+        { "id": "b", "text": "It rounds to the even cent, 2.34.", "correct": true, "explain": "Right: ties go to the even neighbour, so 2.345 becomes 2.34 and 2.355 becomes 2.36." },
+        { "id": "c", "text": "It is truncated to 2.34 whatever the digit.", "correct": false, "explain": "Only exact ties change; 2.346 still rounds up to 2.35." }
+      ],
+      "hint": "Which of the two neighbouring cents, 2.34 or 2.35, is even?"
+    },
+    {
+      "id": "q-money-roundToCents-ties",
+      "nodeId": "money/roundToCents",
+      "stage": "check",
+      "purpose": "understand",
+      "depth": "standard",
+      "prompt": "Which rounding rule does roundToCents apply to exact ties now, and which line decides it?",
+      "reference": "Ties go to the even cent (half-even, banker's rounding). Line 10 detects an exact tie within 1e-9 and line 11 picks the even neighbour; everything else still goes through Math.round.",
+      "hint": "Look at the branch that only runs when the fraction is exactly 0.5: what does it return for an odd floor?"
+    },
+    {
+      "id": "q-money-roundToCents-tests",
+      "nodeId": "money/roundToCents",
+      "stage": "check",
+      "purpose": "judge",
+      "depth": "standard",
+      "prompt": "No test covers half-cent ties. Should this PR add one before it merges?",
+      "choices": [
+        {
+          "id": "a",
+          "text": "Yes: ask for a test of exact ties.",
+          "explain": "Ties are the only inputs whose result changed, so a test pins the new behaviour down.",
+          "comment": {
+            "file": "money/round.ts",
+            "line": 10,
+            "body": "Could you add a test for exact half-cent ties (for example 2.345 -> 2.34 and 2.355 -> 2.36)? They're the only inputs whose result changes, and nothing covers them yet.",
+            "severity": "suggestion"
+          }
+        },
+        { "id": "b", "text": "No: the change is small enough without one.", "explain": "Then the new behaviour is only documented by the doc comment." }
+      ]
+    },
+    {
+      "id": "q-checkout-predict",
+      "nodeId": "checkout",
+      "stage": "predict",
+      "purpose": "understand",
+      "depth": "deep",
+      "prompt": "Nothing in checkout changed. Can an order total still come out different after this PR?",
+      "choices": [
+        { "id": "a", "text": "No, checkout's code is untouched.", "correct": false, "explain": "orderTotal rounds through roundToCents, so it inherits the new rule." },
+        { "id": "b", "text": "Yes, by a cent when the taxed subtotal lands exactly on a half cent.", "correct": true, "explain": "Right: orderTotal rounds once at the end with roundToCents." }
+      ],
+      "hint": "Where does orderTotal get its rounding from?"
+    }
+  ]
+}

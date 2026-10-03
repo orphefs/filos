@@ -41,7 +41,7 @@ export function activate(context: vscode.ExtensionContext): FilosApi {
     }),
   );
 
-  return context.extensionMode === vscode.ExtensionMode.Production ? {} : { __test: createTestApi(controller) };
+  return context.extensionMode === vscode.ExtensionMode.Production ? {} : { __test: createTestApi(controller, context) };
 }
 
 /** Menus may pass a URI or other context as the first argument; only take what we understand. */

@@ -74,6 +74,8 @@ describe('ClaudeCliProvider with the fake CLI', () => {
     assert.ok(rec.prompt.includes('ext:invoice-service'), 'dependency index is in the prompt');
     assert.ok(!rec.argv.some((a: string) => a.includes('Math.floor')), 'the diff never goes into argv');
     assert.equal(rec.flags['--tools'], 'Read,Grep,Glob');
+    assert.equal(rec.task, 'comprehend', 'the comprehension pass carries no task marker');
+    assert.ok(!rec.flags['--append-system-prompt'].startsWith('Filos task:'));
     assert.equal(rec.flags['--permission-mode'], 'dontAsk');
     assert.equal(rec.flags['--max-budget-usd'], '0.5');
     assert.equal(rec.schema.properties.contractVersion.enum[0], '0.1');

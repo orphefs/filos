@@ -7,7 +7,9 @@ import * as vscode from 'vscode';
 import { registerAgentTests } from './agent.test';
 import { registerBranchTests } from './branch.test';
 import { registerClickTests } from './clicks.test';
+import { registerDidacticTests } from './didactic.test';
 import { cdpPort, filos, shot, workbench } from './helpers';
+import { registerReviewTests } from './review.test';
 import { registerSampleTests } from './sample.test';
 
 export async function run(): Promise<void> {
@@ -39,6 +41,10 @@ export async function run(): Promise<void> {
   registerClickTests();
   registerAgentTests();
   registerBranchTests();
+  // Questionnaire, comments and posting (slice 4), then didactic mode (slice 6). Each suite resets
+  // the stored review state it starts from, and leaves the mode on fast.
+  registerReviewTests();
+  registerDidacticTests();
 
   const failures = await new Promise<number>((resolve) => mocha.run(resolve));
   if (failures > 0) throw new Error(`${failures} e2e test${failures === 1 ? '' : 's'} failed`);

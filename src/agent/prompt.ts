@@ -158,7 +158,8 @@ function stripPrefix(p: string): string | undefined {
   return path.replace(/^[ab]\//, '');
 }
 
-function truncate(text: string, max: number): { text: string; cutLines: number } {
+/** Cuts text at a line boundary below `max` characters, reporting how many lines were left out. */
+export function truncate(text: string, max: number): { text: string; cutLines: number } {
   if (text.length <= max) return { text, cutLines: 0 };
   const cut = text.lastIndexOf('\n', max);
   const kept = text.slice(0, cut > 0 ? cut : max);

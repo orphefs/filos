@@ -2,7 +2,7 @@
 // same CSS classes as the graph itself so it always matches the theme.
 
 import { h, s } from './dom';
-import { setTint } from './render';
+import { FOG_PATTERN_ID, fogGlyph, setTint } from './render';
 
 function swatch(width: number, height: number, ...children: SVGElement[]): SVGSVGElement {
   return s('svg', { class: 'legend-swatch', width, height, viewBox: `0 0 ${width} ${height}`, 'aria-hidden': 'true' }, ...children);
@@ -32,13 +32,31 @@ function row(sw: Element, term: string, desc: string): HTMLElement {
   return h('div', { class: 'legend-row' }, h('dt', {}, sw, h('span', {}, term)), h('dd', {}, desc));
 }
 
-export function buildLegend(): HTMLElement {
+/** Didactic mode's map marks: fogged territories and dimmed externals. */
+function fogRows(): HTMLElement[] {
+  return [
+    h('h4', {}, 'The map (didactic mode)'),
+    h(
+      'dl',
+      {},
+      row(
+        swatch(44, 24, s('rect', { class: 'legend-fog', x: 1, y: 3, width: 40, height: 18, rx: 3 }), s('rect', { class: 'legend-fog-hatch', x: 1, y: 3, width: 40, height: 18, rx: 3, fill: `url(#${FOG_PATTERN_ID})` }), fogGlyph(14, 6)),
+        'Unexplored',
+        'Answer one question about it to enter. Until then it shows its name only.',
+      ),
+      row(swatch(44, 24, s('rect', { class: 'legend-external legend-dimmed', x: 1, y: 3, width: 40, height: 17, rx: 3 })), 'Not revealed', 'Outside this repo; shown once a module it uses is explored.'),
+    ),
+  ];
+}
+
+export function buildLegend(opts: { didactic?: boolean } = {}): HTMLElement {
   const scale = h('div', { class: 'legend-scale', 'aria-hidden': 'true' });
   for (const level of [0, 0.17, 0.33, 0.5, 0.67, 0.83, 1]) scale.append(swatch(32, 20, tinted(level)));
 
   return h(
     'div',
     { class: 'legend' },
+    ...(opts.didactic ? fogRows() : []),
     h('h4', {}, 'Colour: risk'),
     h(
       'div',

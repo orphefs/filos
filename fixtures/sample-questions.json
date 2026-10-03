@@ -1,0 +1,444 @@
+{
+  "contractVersion": "0.1",
+  "depth": {
+    "proposed": "standard",
+    "why": "A public function's default changes under three other repos and invoice totals move by cents, which is more than a skim should cover, but the rest of the PR is small and additive, so deep isn't needed."
+  },
+  "questions": [
+    {
+      "id": "q-money-predict",
+      "nodeId": "money",
+      "stage": "predict",
+      "purpose": "understand",
+      "depth": "skim",
+      "prompt": "roundToCents is exported from @acme/ledger, and acme/checkout-web, acme/payouts-service and acme/reporting call it without passing a mode. This PR changes its default to half-even (banker's rounding). Before reading the code: what happens to those three repos when they upgrade, without changing a line of their own code?",
+      "hint": "The new mode argument is optional. What does a caller that passes nothing get? And which amounts can a rounding mode affect at all?",
+      "choices": [
+        {
+          "id": "a",
+          "text": "Nothing changes until they opt in by passing the new mode argument.",
+          "explain": "Not quite: the argument is an opt-out, not an opt-in. A caller that passes nothing gets the new default, half-even. Only passing 'half-up' keeps the old behaviour."
+        },
+        {
+          "id": "b",
+          "text": "Amounts that land exactly on half a cent now round to the even cent: 12.5 cents becomes 12 instead of 13, while 13.5 still becomes 14. Everything else rounds as before.",
+          "correct": true,
+          "explain": "Right. Ties go to the even neighbour, so about half of them now go down instead of up. Nothing fails and nothing warns: fees, cart totals and daily revenue simply move by a cent on some amounts on the day each repo upgrades."
+        },
+        {
+          "id": "c",
+          "text": "Every amount can shift by up to a cent.",
+          "explain": "Only exact ties change. 12.4 cents still rounds to 12 and 12.6 to 13: a rounding mode only decides which way a tie goes."
+        },
+        {
+          "id": "d",
+          "text": "Their builds break, because roundToCents' signature changed.",
+          "explain": "The new parameter is optional and has a default, so every existing call still compiles. That is exactly what makes the change silent."
+        }
+      ]
+    },
+    {
+      "id": "q-round-default",
+      "nodeId": "money/roundToCents",
+      "stage": "check",
+      "purpose": "judge",
+      "depth": "skim",
+      "prompt": "roundToCents now defaults to half-even. Three other repos call it without a mode, and the package README says a change to what an exported function returns is a breaking change. What should the review say?",
+      "choices": [
+        {
+          "id": "fine",
+          "text": "It's fine as is: half-even is the better default, and the doc comment says how to get the old behaviour back.",
+          "explain": "Then nothing tells the three consumers. Their fees, cart totals and daily revenue move by a cent on ties the day they upgrade, and a minor version invites that upgrade."
+        },
+        {
+          "id": "keep-half-up",
+          "text": "Keep 'half-up' as the default, and let this package opt in to 'half-even' where it wants it.",
+          "explain": "The safest option for consumers: nothing changes for them. This package passes 'half-even' explicitly where it multiplies by rates and percentages. The cost is that the better rounding stays opt-in for everyone else.",
+          "comment": {
+            "file": "src/money/round.ts",
+            "line": 18,
+            "severity": "blocking",
+            "body": "This changes the default rounding for every caller of roundToCents. acme/checkout-web, acme/payouts-service and acme/reporting call it without a mode, so after upgrading their ties will round to the even cent (12.5 cents -> 12 instead of 13) without any change on their side, and our README treats a change in what an exported function returns as breaking. Could we keep 'half-up' as the default here, and pass 'half-even' explicitly where this package wants it (Money.multiply for VAT and percentage discounts)?"
+          }
+        },
+        {
+          "id": "major",
+          "text": "Keep the new default, but release it as a major version and give the three consumers a heads-up.",
+          "explain": "Honest about the break: semver tells consumers to look before upgrading, and each team can decide whether to pin 'half-up'. It relies on someone actually telling them.",
+          "comment": {
+            "file": "src/money/round.ts",
+            "line": 18,
+            "severity": "suggestion",
+            "body": "Happy with half-even as the new default, but by our README changing what an exported function returns is a breaking change (12.5 cents now rounds to 12, not 13). Can we release this as a major version, and give acme/checkout-web, acme/payouts-service and acme/reporting a heads-up so they can decide whether to pin 'half-up'?"
+          }
+        },
+        {
+          "id": "ask",
+          "text": "Ask whether the consumers' owners have seen this before deciding.",
+          "explain": "Reasonable when you don't know their constraints. Payouts in particular may have to match amounts already reported to partners.",
+          "comment": {
+            "file": "src/money/round.ts",
+            "line": 18,
+            "severity": "question",
+            "body": "Have the owners of acme/checkout-web, acme/payouts-service and acme/reporting seen this? They call roundToCents without a mode, so their results change on half-cent ties when they upgrade. Payouts' fees, for example, may need to match amounts already reported to partners."
+          }
+        }
+      ]
+    },
+    {
+      "id": "q-multiply-ties",
+      "nodeId": "money/Money.multiply",
+      "stage": "check",
+      "purpose": "understand",
+      "depth": "standard",
+      "prompt": "Inside this repo, Money.multiply is called with a quantity (Invoice.subtotal, netByCategory), a VAT rate (computeVat) and a percentage (applyDiscount). Where can the new rounding actually change a result?",
+      "hint": "Which of those factors can turn a whole number of cents into a fraction? And what does Invoice.addLine accept as a quantity?",
+      "choices": [
+        {
+          "id": "a",
+          "text": "Everywhere Money.multiply is called, line totals (price × quantity) included.",
+          "explain": "Whole cents times a whole quantity is already whole, so there is no tie to round. Invoice.addLine rejects fractional quantities (line 31), which keeps it that way."
+        },
+        {
+          "id": "b",
+          "text": "Only in VAT (computeVat) and percentage discounts (applyDiscount); price × quantity is always whole cents.",
+          "correct": true,
+          "explain": "Right. Rates and percentages produce fractions, quantities don't. For example SPRING25 on €10.02 is 250.5 cents: half-even takes off €2.50, half-up would take €2.51."
+        },
+        {
+          "id": "c",
+          "text": "Only in computeVat, since VAT is what the rounding change is about.",
+          "explain": "applyDiscount multiplies too: percentage codes call subtotal.multiply(percent / 100), so 25% of €10.02 (250.5 cents) lands on a tie and rounds to €2.50."
+        },
+        {
+          "id": "d",
+          "text": "Nowhere: Money.multiply only passes the mode through, and these callers don't pass one.",
+          "explain": "An omitted mode arrives at roundToCents as undefined, and a default parameter applies when it receives undefined, so these callers get half-even. That is how VAT changed without vat.ts's computeVat changing."
+        }
+      ]
+    },
+    {
+      "id": "q-checkout-web",
+      "nodeId": "ext/checkout-web",
+      "stage": "check",
+      "purpose": "understand",
+      "depth": "standard",
+      "prompt": "acme/checkout-web prices the cart in src/cart/totals.ts by calling roundToCents and Money.multiply without a mode. After it upgrades, what must it change to keep its cart totals exactly as they are today? And would that keep carts and invoices in agreement?",
+      "hint": "Money.multiply has a mode parameter too: what does it hand to roundToCents when its caller gives none? And how does Invoice.total round VAT now?",
+      "reference": "Pass 'half-up' wherever it rounds: as the second argument of every roundToCents call, and of every Money.multiply call whose factor can produce a fraction (rates, percentages). Pinning roundToCents alone isn't enough, because Money.multiply forwards an omitted mode as undefined and roundToCents then applies the new half-even default. That keeps the cart stable, but not in agreement with invoices: this package now rounds invoice VAT half-even and once per VAT group, so a cart that rounds VAT per line, half-up, can differ from the invoice. Two €1.50 lines in Germany: 58 cents of VAT in such a cart, 57 on the invoice. Someone has to decide which figure is authoritative, and whether the cart should show the invoice's numbers instead of computing its own."
+    },
+    {
+      "id": "q-invoice-predict",
+      "nodeId": "invoice",
+      "stage": "predict",
+      "purpose": "understand",
+      "depth": "standard",
+      "prompt": "Invoice.total now rounds VAT once per rate across the whole invoice, instead of on every line. An invoice in Germany (19% VAT) has two lines of €1.50 each. Before reading the code: how much VAT does it carry after this PR, and how much did it carry before?",
+      "hint": "How many times is VAT rounded now: once per line, or once for the 19% group? And what is 19% of €3.00, exactly?",
+      "choices": [
+        {
+          "id": "a",
+          "text": "57 cents now; 58 before.",
+          "correct": true,
+          "explain": "Right. Before, each line was rounded on its own: 19% of 150 cents is 28.5, which rounded up to 29, twice: 58. Now both lines form one 19% group of €3.00, and 19% of 300 cents is exactly 57, with nothing to round. Per-line rounding errors can no longer add up, which is the point; but the customer pays a cent less, and no invoice test has a case like this."
+        },
+        {
+          "id": "b",
+          "text": "58 cents, both before and after.",
+          "explain": "That is per-line rounding with ties going up, the old rule. The PR stops rounding per line, so the two half cents are never rounded separately."
+        },
+        {
+          "id": "c",
+          "text": "56 cents now; 58 before.",
+          "explain": "56 is per-line rounding with the new half-even rule (28.5 -> 28, twice). But the PR also stops rounding per line: the lines are summed first, and 19% of €3.00 has no fraction at all."
+        },
+        {
+          "id": "d",
+          "text": "57 cents, both before and after.",
+          "explain": "Before this PR each line was rounded on its own, and 28.5 cents rounded up to 29 on both lines."
+        }
+      ]
+    },
+    {
+      "id": "q-total-tests",
+      "nodeId": "invoice/Invoice.total",
+      "stage": "check",
+      "purpose": "judge",
+      "depth": "skim",
+      "prompt": "test/invoice.test.ts wasn't touched. Its two totals cases (3 × €10.00 in Germany; a €20.00 reduced-rate book plus 2 × €5.00 in France) give the same VAT whether it's rounded per line or once per rate. How do you judge the test coverage of the new rounding in Invoice.total?",
+      "choices": [
+        {
+          "id": "fine",
+          "text": "It's fine as is: the existing tests still pass.",
+          "explain": "They would also pass if someone put per-line rounding back, so nothing pins the behaviour this PR is about."
+        },
+        {
+          "id": "test",
+          "text": "Ask for a test that tells the two rounding rules apart.",
+          "explain": "A small ask that pins the behaviour change: one case whose VAT differs between per-line and per-rate rounding.",
+          "comment": {
+            "file": "src/invoice/invoice.ts",
+            "line": 61,
+            "severity": "suggestion",
+            "body": "VAT is now rounded once per rate instead of per line, but test/invoice.test.ts wasn't updated, and both of its totals cases give the same VAT under either rule, so nothing pins the new behaviour. Could you add a case that tells them apart? Two €1.50 lines in Germany would do: 57 cents of VAT now, 58 under per-line rounding (29 + 29)."
+          }
+        },
+        {
+          "id": "policy",
+          "text": "Ask whether rounding once per invoice is what finance and the tax rules expect.",
+          "explain": "This questions the change itself rather than its tests: the amount customers are charged moves, so someone outside engineering may need to agree.",
+          "comment": {
+            "file": "src/invoice/invoice.ts",
+            "line": 44,
+            "severity": "question",
+            "body": "Rounding VAT once per rate on the whole invoice changes what customers are charged (two €1.50 lines in Germany: 57 cents of VAT instead of 58). Has finance confirmed this is the rounding we should use for DE, FR, GB and NL invoices? And does anything compare invoices issued before and after the change?"
+          }
+        }
+      ]
+    },
+    {
+      "id": "q-total-discount",
+      "nodeId": "invoice/Invoice.total",
+      "stage": "check",
+      "purpose": "understand",
+      "depth": "standard",
+      "prompt": "SPRING25 (25% off) is applied to an invoice in Germany with a €30.00 chair (standard rate, 19%) and a €10.00 book (reduced rate, 7%). How does Invoice.total handle the €10.00 discount?",
+      "hint": "What does total() pass to discount.allocate, and which amount does computeVat receive for each group?",
+      "choices": [
+        {
+          "id": "a",
+          "text": "It comes off the gross after VAT: €46.40 - €10.00 = €36.40.",
+          "explain": "total() subtracts each share from its group's net before computeVat runs, so VAT is charged on the discounted amount, not the other way round."
+        },
+        {
+          "id": "b",
+          "text": "It comes off before VAT, all of it from the standard-rate chair.",
+          "explain": "The shares come from discount.allocate over every group's net, so the book takes its part of the discount too."
+        },
+        {
+          "id": "c",
+          "text": "It comes off before VAT, split evenly: €5.00 from each rate.",
+          "explain": "allocate splits in proportion to the ratios it is given, here the groups' nets (3000 and 1000 cents): 3 to 1, not 1 to 1."
+        },
+        {
+          "id": "d",
+          "text": "It comes off before VAT, split €7.50 / €2.50 in proportion to each rate's net. VAT is 19% of €22.50 plus 7% of €7.50: €4.28 + €0.52 = €4.80.",
+          "correct": true,
+          "explain": "Right. applyDiscount computes €10.00 off the subtotal, Money.allocate spreads it 3 to 1 over the rate groups (a leftover cent would go to the first group), and computeVat runs on each discounted group. Both groups land on a tie: 427.5 cents rounds up to 428 and 52.5 down to 52. That is half-even sending ties to the even cent, in both directions."
+        }
+      ]
+    },
+    {
+      "id": "q-total-groups",
+      "nodeId": "invoice/Invoice.total",
+      "stage": "check",
+      "purpose": "understand",
+      "depth": "deep",
+      "prompt": "Invoice.total's doc comment says VAT is \"rounded once per rate on the whole invoice\". Read netByCategory and the loop in total(). Is that exactly what happens? Describe an invoice where the difference would show.",
+      "hint": "What is the key of the map that netByCategory returns? Can two different keys have the same rate?",
+      "reference": "Not quite: lines are grouped by VAT category, not by rate, so VAT is rounded once per category. Usually that is the same thing, but the new 'ebook' category falls back to the standard rate in GB and NL. An NL invoice with a €2.50 standard-rate item and a €2.50 e-book has two 21% groups; each carries 52.5 cents of VAT, rounded to 52, so the invoice charges €1.04. Rounding once per rate would give 21% of €5.00 = €1.05. Either the doc comment should say 'per VAT category', or total() should group by vatRate(country, category)."
+    },
+    {
+      "id": "q-discount-tests",
+      "nodeId": "invoice/applyDiscount",
+      "stage": "check",
+      "purpose": "judge",
+      "depth": "skim",
+      "prompt": "applyDiscount is new money arithmetic: percentage codes go through Money.multiply, and fixed codes are capped at the subtotal. No test calls it, and the only new handler test checks that an unknown code gets a 400. What do you ask for?",
+      "choices": [
+        {
+          "id": "fine",
+          "text": "Nothing: it's eight lines and reads correctly.",
+          "explain": "Then the cap, the percentage rounding (SPRING25 on €10.02 takes off €2.50; half-up would make it €2.51) and the fixed-amount path all ship untested, and a later change to any of them goes unnoticed."
+        },
+        {
+          "id": "unit",
+          "text": "Unit tests for applyDiscount: a percentage code, a fixed code, and the cap.",
+          "explain": "Pins each path of the new function directly, including a rounding tie, which is exactly where this PR's two changes meet.",
+          "comment": {
+            "file": "src/invoice/discount.ts",
+            "line": 23,
+            "severity": "blocking",
+            "body": "applyDiscount is new money logic with no tests: nothing exercises a percentage code, a fixed code, or the cap at the subtotal. Could you add unit tests for each? Useful cases: SPRING25 on €10.02, a rounding tie that should take off €2.50 under half-even, and FIVEOFF on a €3.00 invoice, which should be capped at €3.00."
+          }
+        },
+        {
+          "id": "e2e",
+          "text": "An end-to-end test that posts a valid code to POST /invoices.",
+          "explain": "Pins the discount-before-VAT path through the handler, the way mobile-app will use it, though it won't reach every branch of applyDiscount.",
+          "comment": {
+            "file": "test/handlers.test.ts",
+            "line": 31,
+            "severity": "suggestion",
+            "body": "The only discount test is the unknown-code 400. Could you add one that posts a valid code and checks the whole response? WELCOME10 on this file's order (2 × €49.99 in Germany) should give net 89.98, discount 10.00, VAT 17.10 and gross 107.08, which pins the discount-before-VAT path end to end."
+          }
+        }
+      ]
+    },
+    {
+      "id": "q-discount-currency",
+      "nodeId": "invoice/applyDiscount",
+      "stage": "check",
+      "purpose": "judge",
+      "depth": "deep",
+      "prompt": "FIVEOFF is stored as { kind: 'fixed', cents: 500 } with no currency, and applyDiscount turns it into Money.of(500, invoice.currency). What's your call?",
+      "choices": [
+        {
+          "id": "fine",
+          "text": "It's fine as is: €5, £5 and $5 are close enough for a promotion.",
+          "explain": "A legitimate business call, as long as it's a conscious one: FIVEOFF is then worth a different amount in each currency, and nothing in the code says whether that was intended."
+        },
+        {
+          "id": "currency",
+          "text": "Give fixed codes a currency, so they only apply where they were priced.",
+          "explain": "Makes the amount unambiguous, at the cost of a lookup per currency, or rejecting the code on invoices in other currencies.",
+          "comment": {
+            "file": "src/invoice/discount.ts",
+            "line": 7,
+            "severity": "suggestion",
+            "body": "Fixed codes are a bare number of cents with no currency, and applyDiscount borrows the invoice's currency (line 28), so FIVEOFF takes €5 off a EUR invoice, £5 off a GBP one and $5 off a USD one. Could the fixed variant of DiscountCode carry a currency (or a Money), so a code only applies where it was priced?"
+          }
+        },
+        {
+          "id": "ask",
+          "text": "Ask whether one code is meant to work in every currency.",
+          "explain": "Leaves the decision with the author, and gets the intent written down either way.",
+          "comment": {
+            "file": "src/invoice/discount.ts",
+            "line": 28,
+            "severity": "question",
+            "body": "Is FIVEOFF meant to take 500 minor units off in whatever currency the invoice is in (€5, £5 or $5)? If so, a comment here would help the next reader; if not, the code needs a currency."
+          }
+        }
+      ]
+    },
+    {
+      "id": "q-tax-predict",
+      "nodeId": "tax",
+      "stage": "predict",
+      "purpose": "understand",
+      "depth": "standard",
+      "prompt": "computeVat's own code is unchanged in this PR, and so are the VAT rates of the existing categories. Before reading the code: will computeVat(net, country) return different amounts for the same inputs after this PR?",
+      "hint": "computeVat doesn't round anything itself. Which function turns its fractional cents into whole ones, and did that function change?",
+      "choices": [
+        {
+          "id": "a",
+          "text": "No: neither its code nor its rates changed.",
+          "explain": "computeVat rounds through Money.multiply, which calls roundToCents, and roundToCents' default changed. A function can change behaviour without its own lines changing."
+        },
+        {
+          "id": "b",
+          "text": "Yes, but only when net × rate lands exactly on half a cent: 19% of €1.50 is 28.5 cents, which now rounds to 28 instead of 29.",
+          "correct": true,
+          "explain": "Right. The rounding comes from roundToCents via Money.multiply, and only ties change. That is why the graph shows computeVat as unchanged context on the path from invoices to roundToCents."
+        },
+        {
+          "id": "c",
+          "text": "Yes, for every amount.",
+          "explain": "Amounts that aren't ties round as before: 19% of €19.99 is 379.81 cents, still 380, which vat.test.ts pins."
+        },
+        {
+          "id": "d",
+          "text": "Only for the new 'ebook' category.",
+          "explain": "'ebook' is a new input, so it has no old result to differ from. The amounts that change are ties in every category, because they all round through roundToCents."
+        }
+      ]
+    },
+    {
+      "id": "q-vatrate-ebook",
+      "nodeId": "tax/vatRate",
+      "stage": "check",
+      "purpose": "understand",
+      "depth": "standard",
+      "prompt": "What does vatRate('NL', 'ebook') return?",
+      "hint": "Which countries appear in EBOOK_RATES? And what does ?? do when the value on its left is undefined?",
+      "choices": [
+        {
+          "id": "a",
+          "text": "0.09, the Netherlands' reduced rate.",
+          "explain": "Only countries listed in EBOOK_RATES get a special e-book rate, and there is no automatic link to the reduced rate."
+        },
+        {
+          "id": "b",
+          "text": "0.21, the Netherlands' standard rate.",
+          "correct": true,
+          "explain": "Right. NL isn't in EBOOK_RATES, so EBOOK_RATES.NL is undefined and ?? falls back to RATES.NL.standard. Only DE (7%) and FR (5.5%) opted in. vat.test.ts pins the fallback for GB, but not for NL."
+        },
+        {
+          "id": "c",
+          "text": "0.07, the e-book rate from EBOOK_RATES.",
+          "explain": "7% is Germany's entry. EBOOK_RATES is looked up by country, and NL has no entry."
+        },
+        {
+          "id": "d",
+          "text": "It throws, because NL has no e-book rate.",
+          "explain": "A missing key in a plain object reads as undefined rather than throwing, and the ?? operator turns that undefined into the standard rate."
+        }
+      ]
+    },
+    {
+      "id": "q-api-predict",
+      "nodeId": "api",
+      "stage": "predict",
+      "purpose": "understand",
+      "depth": "standard",
+      "prompt": "POST /invoices now accepts an optional discountCode, and its response gains a discount field. acme/mobile-app calls this endpoint and doesn't know about discounts yet. Before reading the code: which of its requests can get a different response after this PR?",
+      "hint": "Compare what the endpoint returns, not just what it accepts. Does an old request get exactly the same JSON back?",
+      "choices": [
+        {
+          "id": "a",
+          "text": "None: discountCode is optional, so requests without it are handled as before.",
+          "explain": "The request is handled the same way, but the response isn't the same: it gains a discount field, and its totals go through the new rounding."
+        },
+        {
+          "id": "b",
+          "text": "Potentially every one: each response gains the discount field, and the totals in it can move by a cent from the rounding changes.",
+          "correct": true,
+          "explain": "Right. The response always includes discount, 0.00 when no code is sent (handlers.test.ts now expects it). If mobile-app's JSON decoding rejects unknown fields, every call breaks; if it ignores them, it still shows totals that can differ by a cent, for example when VAT lands on half a cent."
+        },
+        {
+          "id": "c",
+          "text": "Only requests that send a discountCode.",
+          "explain": "The app sends no code, yet its responses still change: the response shape changes for everyone, and every total goes through the new rounding."
+        },
+        {
+          "id": "d",
+          "text": "Every request fails with a 400 until the app sends a code.",
+          "explain": "The code is optional; only an unknown code gets a 400. A request without one is accepted as before."
+        }
+      ]
+    },
+    {
+      "id": "q-handler-null",
+      "nodeId": "api/createInvoiceHandler",
+      "stage": "check",
+      "purpose": "understand",
+      "depth": "standard",
+      "prompt": "A client posts an otherwise valid order with \"discountCode\": null, as some JSON encoders write an optional field that isn't set. What does POST /invoices return?",
+      "hint": "Is null the same as undefined under !==? And what does String(null) produce?",
+      "choices": [
+        {
+          "id": "a",
+          "text": "201 with no discount: null means no code.",
+          "explain": "The handler checks body.discountCode !== undefined, and null is not undefined, so it goes on to look the code up."
+        },
+        {
+          "id": "b",
+          "text": "400, \"expected { currency, country, lines[] }\".",
+          "explain": "That check runs first and passes, because currency, country and lines are fine. The discount lookup comes after it."
+        },
+        {
+          "id": "c",
+          "text": "400, unknown discount code \"null\".",
+          "correct": true,
+          "explain": "Right. null passes the !== undefined check, String(null) is \"null\", and no code matches \"NULL\". If you think null should mean 'no code', that's worth a note for the author: a future client could trip over it."
+        },
+        {
+          "id": "d",
+          "text": "500, because findDiscount crashes on null.",
+          "explain": "String(null) turns it into the string \"null\" before findDiscount sees it, so nothing throws."
+        }
+      ]
+    }
+  ]
+}

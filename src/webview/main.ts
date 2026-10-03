@@ -8,7 +8,7 @@ import type { HostToWebview } from '../protocol';
 import { App } from './app';
 import { post } from './vscodeApi';
 
-const KNOWN = new Set(['loading', 'load', 'error', 'select']);
+const KNOWN = new Set(['loading', 'load', 'error', 'select', 'review']);
 
 function start(): void {
   const mount = document.getElementById('app') ?? document.body;

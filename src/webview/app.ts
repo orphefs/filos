@@ -3,16 +3,23 @@
 // through refresh(), which posts "rendered" when the picture matches the state.
 
 import type { GraphNode, ReviewGraph } from '../contract/graph';
-import type { ErrorAction, GraphSource, HostToWebview, ViewState } from '../protocol';
+import type { Depth } from '../contract/questions';
+import type { ErrorAction, GraphSource, HostToWebview, ReviewAction, ViewState } from '../protocol';
+import { GraphIndex } from '../review/order';
+import type { ReviewSnapshot } from '../review/types';
+import { ReviewControls } from './controls';
 import { h } from './dom';
+import { computeFog, hiddenByFog, NO_FOG, selectable, type Fog } from './fog';
 import { layoutGraph, type Direction, type Layout, type LayoutNodeInput, type Point } from './layout';
 import { ancestors, buildModel, childrenOf, hasChildren, isContainer, liftEdges, visibleNodes, type Model, type VisibleEdge } from './model';
 import { GraphView, HEADER_H, nodeSize, visibleParent, type RenderContext } from './render';
+import { ReviewPane } from './reviewPane';
+import { Socrates } from './socrates';
 import { errorView, loadingView, waitingView } from './status';
-import { renderSummary } from './summary';
+import { renderSummary, type SummaryReview } from './summary';
 import { resolveFonts, type Fonts } from './text';
 import { Viewport } from './viewport';
-import { loadPersisted, post, savePersisted } from './vscodeApi';
+import { loadPersisted, loadTab, post, savePersisted } from './vscodeApi';
 
 type Mode = 'waiting' | 'loading' | 'error' | 'graph';
 
@@ -45,7 +52,19 @@ export class App {
   private readonly placeholder: HTMLElement;
   private readonly graph: GraphView;
   private readonly viewport: Viewport;
+  private readonly controls: ReviewControls;
+  private readonly pane: ReviewPane;
+  private readonly socrates: Socrates;
   private fonts: Fonts;
+
+  /** Questionnaire / comments / didactic state from the host (absent with an older host). */
+  private reviewSnap?: ReviewSnapshot;
+  private index?: GraphIndex;
+  private fog: Fog = NO_FOG;
+  /** The territory explored most recently: where Socrates waits between gates. */
+  private lastExplored?: string;
+  /** A short-lived thing for Socrates to say (e.g. why an external is still dimmed). */
+  private socratesNote?: { id: string; text: string; timer: ReturnType<typeof setTimeout> };
 
   private mode: Mode = 'waiting';
   private model?: Model;
@@ -99,8 +118,13 @@ export class App {
     this.placeholder = h('div', { class: 'graph-placeholder', role: 'status' }, 'Laying out the graph…');
     this.graphHost = h('div', { class: 'graph-host' }, this.graph.svg, this.placeholder);
     this.graph.trackFocus(this.graphHost);
+    this.socrates = new Socrates();
+    this.graphHost.append(this.socrates.el);
     this.viewport = new Viewport(this.graph.svg, this.graph.world, {
-      onChange: () => (this.zoomReadout.textContent = `${Math.round(this.viewport.k * 100)}%`),
+      onChange: () => {
+        this.zoomReadout.textContent = `${Math.round(this.viewport.k * 100)}%`;
+        this.placeSocrates();
+      },
       onBackgroundClick: () => this.clearSelection(),
     });
 
@@ -111,16 +135,38 @@ export class App {
     this.summaryEl = h('div', { class: 'summary-scroll' });
     this.liveEl = h('div', { class: 'sr-only', 'aria-live': 'polite' });
 
+    this.controls = new ReviewControls({
+      setMode: (mode) => this.postReview({ type: 'setMode', mode }),
+      setDepth: (depth: Depth) => this.postReview({ type: 'setDepth', depth }),
+    });
+    this.pane = new ReviewPane(
+      this.summaryEl,
+      {
+        model: () => this.model,
+        index: () => this.index,
+        fog: () => this.fog,
+        selected: () => this.selected,
+        post: (action) => this.postReview(action),
+        selectNode: (id) => this.selectFromSummary(id),
+        enter: (id) => this.enterTerritory(id),
+        continueInto: (id) => this.continueInto(id),
+        focusNode: (id) => this.graph.focusNode(id),
+        announce: (text) => this.announce(text),
+        tabChanged: () => this.persist(false),
+      },
+      loadTab() ?? 'summary',
+    );
+
     this.review = h(
       'div',
       { class: 'review', hidden: true },
-      h('header', { class: 'topbar' }, this.titleEl, this.metaEl, this.warningsEl),
+      h('header', { class: 'topbar' }, this.titleEl, this.metaEl, this.warningsEl, this.controls.el),
       h('section', { class: 'orientation-wrap', 'aria-label': 'Orientation' }, this.orientationEl),
       h(
         'div',
         { class: 'workspace' },
         h('section', { class: 'graph-pane', 'aria-label': 'Graph' }, toolbar, this.graphHost),
-        h('aside', { class: 'summary-pane', 'aria-label': 'Summary' }, this.summaryEl),
+        h('aside', { class: 'summary-pane', 'aria-label': 'Summary, questions and comments' }, this.pane.el),
       ),
     );
     this.statusHost = h('div', { class: 'status-host' }, waitingView());
@@ -129,6 +175,9 @@ export class App {
     this.fonts = resolveFonts(this.root);
 
     this.root.addEventListener('keydown', (ev) => {
+      // Escape in a text box or the depth menu belongs to that control, not the selection.
+      const t = ev.target as HTMLElement;
+      if (t.closest?.('textarea, input, select, .depth-menu, .gate')) return;
       if (ev.key === 'Escape' && this.mode === 'graph' && this.selected) {
         ev.preventDefault();
         this.clearSelection();
@@ -166,7 +215,168 @@ export class App {
       case 'select':
         this.hostSelect(msg.id);
         break;
+      case 'review':
+        this.applyReview(msg.review);
+        break;
     }
+  }
+
+  private postReview(action: ReviewAction): void {
+    post(action);
+  }
+
+  private announce(text: string): void {
+    // Clear first so the same words twice in a row are still read.
+    this.liveEl.textContent = '';
+    requestAnimationFrame(() => (this.liveEl.textContent = text));
+  }
+
+  /**
+   * A review snapshot: header controls, side pane, fog and Socrates follow it. Idempotent: the
+   * same snapshot twice changes nothing on screen.
+   */
+  private applyReview(review: ReviewSnapshot): void {
+    if (!review || typeof review !== 'object' || !Array.isArray(review.questions) || !Array.isArray(review.comments) || !Array.isArray(review.territories)) {
+      console.warn('[filos] ignoring a malformed review snapshot');
+      return;
+    }
+    const prev = this.reviewSnap;
+    this.reviewSnap = review;
+    for (const t of review.territories) {
+      if (t.explored && !prev?.territories.find((p) => p.nodeId === t.nodeId)?.explored && prev) this.lastExplored = t.nodeId;
+    }
+    this.controls.update(review);
+    if (!this.model) return; // applied when the graph loads
+    this.applyFog(prev?.mode !== review.mode && !!prev);
+    this.pane.update(review);
+    // A gate opened from the pane (or the map list): bring its territory into view on the map.
+    const gate = review.gate?.nodeId;
+    if (gate && gate !== prev?.gate?.nodeId) {
+      const box = this.graph.boxes.get(gate);
+      if (box) this.viewport.ensureVisible(box, !matchMedia('(prefers-reduced-motion: reduce)').matches);
+    }
+    // The summary shows the mode (the map) and territory progress: redraw it only when those move.
+    const sig = JSON.stringify([review.mode, review.territories]);
+    if (sig !== this.summarySig) this.renderSummary(false);
+    this.placeSocrates();
+  }
+
+  /** What the summary last showed of the review, so unrelated snapshots don't rebuild it. */
+  private summarySig = '';
+
+  /** Recomputes the fog; redraws the graph when the picture changes. */
+  private applyFog(modeChanged: boolean): void {
+    const fog = computeFog(this.index, this.reviewSnap);
+    const changed = fog.key !== this.fog.key;
+    this.fog = fog;
+    // A selection that went into fog (didactic mode switched on) is dropped: it can't be shown.
+    if (this.selected && !selectable(this.index, fog, this.selected)) {
+      this.selected = undefined;
+      this.seenBefore = false;
+      this.persist(true);
+    }
+    if (changed && this.mode === 'graph') {
+      if (modeChanged) this.chooseDirection = true;
+      void this.refresh({ fit: modeChanged && !this.viewport.userMoved, reveal: this.selected, animate: !modeChanged });
+    }
+  }
+
+  /** Expanded nodes as drawn: fogged territories stay closed whatever the saved state says. */
+  private shown(): Set<string> {
+    if (!this.fog.fogged.size) return this.expanded;
+    const out = new Set(this.expanded);
+    for (const id of this.fog.fogged) out.delete(id);
+    return out;
+  }
+
+  /** Didactic: open the gate into a fogged territory (the host answers with a snapshot). */
+  private enterTerritory(id: string): void {
+    const t = this.index?.territoryOf(id) ?? id;
+    this.liveEl.textContent = `Entering ${this.model?.byId.get(t)?.label ?? t}`;
+    this.postReview({ type: 'enter', nodeId: t });
+  }
+
+  /** After the gate: open the territory, select it (the host opens its code) and focus it. */
+  private continueInto(id: string): void {
+    const model = this.model;
+    if (!model?.byId.has(id)) return;
+    if (hasChildren(model, id)) this.expanded.add(id);
+    this.setSelected(id, true);
+    void this.refresh({ anchor: id, animate: true, focus: id });
+  }
+
+  /** A dimmed external: say what reveals it, rather than silently doing nothing. */
+  private explainDimmed(id: string): void {
+    const label = this.model?.byId.get(id)?.label ?? id;
+    const linked = this.index?.linkedTerritories(id) ?? [];
+    const names = linked.map((t) => this.model?.byId.get(t)?.label ?? t);
+    const text = names.length ? `${label} uses ${names.join(' and ')}. Explore ${names[0]} first.` : `${label} is outside this repo.`;
+    this.announce(text);
+    if (this.socratesNote) clearTimeout(this.socratesNote.timer);
+    this.socratesNote = {
+      id,
+      text,
+      timer: setTimeout(() => {
+        this.socratesNote = undefined;
+        this.placeSocrates();
+      }, 6000),
+    };
+    this.placeSocrates();
+  }
+
+  // ---- Socrates ------------------------------------------------------------------------------
+
+  /** Where Socrates stands and what he says, in didactic mode. */
+  private socratesPlan(): { id: string; text: string } | undefined {
+    const review = this.reviewSnap;
+    const index = this.index;
+    const model = this.model;
+    if (!review || review.mode !== 'didactic' || !index || !model || !review.territories.length) return undefined;
+    const label = (id: string) => model.byId.get(id)?.label ?? id;
+    const explored = (id: string) => !!review.territories.find((t) => t.nodeId === id)?.explored;
+    const gate = review.gate;
+    if (gate) {
+      const name = label(gate.nodeId);
+      let text = 'Before we look: what do you expect?';
+      if (gate.step === 'familiarity') text = `Have you worked with ${name} before?`;
+      else if (explored(gate.nodeId)) text = `Explored ${name}. Continue when you’re ready.`;
+      else if (!gate.questionId) text = 'One moment: the questions are still being written.';
+      else if (review.answers[gate.questionId]?.pending) text = 'Let me read your answer…';
+      else if (review.answers[gate.questionId]?.awaitingSelfCheck) text = 'Compare yours with what a good answer covers.';
+      else if (review.answers[gate.questionId]?.attempts.length) text = 'Not quite. Look at the hint and try again.';
+      return { id: gate.nodeId, text };
+    }
+    if (this.socratesNote) return { id: this.socratesNote.id, text: this.socratesNote.text };
+    const unexplored = review.territories.filter((t) => !t.explored).map((t) => t.nodeId);
+    unexplored.sort((a, b) => index.riskOf(b) - index.riskOf(a) || index.indexOf(a) - index.indexOf(b));
+    if (!review.coverage.explored) return { id: unexplored[0], text: `Where shall we start? ${label(unexplored[0])} looks riskiest.` };
+    const selT = this.selected ? index.territoryOf(this.selected) : undefined;
+    const at = (selT && explored(selT) ? selT : undefined) ?? (this.lastExplored && explored(this.lastExplored) ? this.lastExplored : undefined) ?? review.territories.find((t) => t.explored)!.nodeId;
+    if (!unexplored.length) return { id: at, text: 'Every territory explored. Time to decide on the comments.' };
+    return { id: at, text: `Explored ${label(at)}. Where next?` };
+  }
+
+  private placeSocrates(): void {
+    // The territory being entered wears a dashed ring, so the gate in the pane points at the map.
+    const gate = this.reviewSnap?.mode === 'didactic' ? this.reviewSnap.gate?.nodeId : undefined;
+    for (const el of this.graph.svg.querySelectorAll('.node.is-gate')) if ((el as SVGGElement).dataset.nodeId !== gate) el.classList.remove('is-gate');
+    if (gate) this.graph.nodeEl(gate)?.classList.add('is-gate');
+
+    const plan = this.mode === 'graph' ? this.socratesPlan() : undefined;
+    const box = plan ? this.graph.boxes.get(plan.id) : undefined;
+    if (!plan || !box) {
+      this.socrates.hide();
+      return;
+    }
+    const tl = this.viewport.toScreen(box);
+    const k = this.viewport.k;
+    const r = this.graphHost.getBoundingClientRect();
+    // Panned out of view: he waits off stage rather than pressed against the edge.
+    if (tl.x > r.width || tl.y > r.height || tl.x + box.width * k < 0 || tl.y + box.height * k < 0) {
+      this.socrates.hide();
+      return;
+    }
+    this.socrates.place(plan.id, { x: tl.x, y: tl.y, width: box.width * k, height: box.height * k }, { width: r.width, height: r.height }, plan.text);
   }
 
   private action(a: ErrorAction): void {
@@ -190,6 +400,8 @@ export class App {
       return;
     }
     this.model = model;
+    this.index = new GraphIndex(graph);
+    this.fog = computeFog(this.index, this.reviewSnap);
     this.source = source;
     this.key = `${graph.pr?.title ?? ''}\u0000${graph.pr?.head ?? ''}\u0000${graph.pr?.base ?? ''}`;
     this.layouts.clear();
@@ -205,7 +417,7 @@ export class App {
     const known = (id: string) => model.byId.has(id);
     this.expanded = new Set((view?.expanded ?? []).filter((id) => known(id) && hasChildren(model, id)));
     this.visited = new Set((view?.visited ?? []).filter(known));
-    this.selected = view?.selected && known(view.selected) ? view.selected : undefined;
+    this.selected = view?.selected && known(view.selected) && selectable(this.index, this.fog, view.selected) ? view.selected : undefined;
     if (this.selected) for (const a of ancestors(model, this.selected)) this.expanded.add(a);
     this.seenBefore = !!this.selected && this.visited.has(this.selected);
     if (this.selected) this.visited.add(this.selected);
@@ -218,6 +430,7 @@ export class App {
     this.needsFit = true;
     this.placeholder.hidden = false;
     this.renderSummary();
+    this.pane.update(this.reviewSnap);
     this.persist(false);
     void this.refresh({ fit: true, reveal: this.selected });
   }
@@ -255,6 +468,9 @@ export class App {
   private activate(id: string): void {
     const model = this.model;
     if (!model?.byId.has(id)) return;
+    // Didactic: a fogged territory is entered through its gate; a dimmed external waits.
+    if (this.fog.fogged.has(id)) return this.enterTerritory(id);
+    if (this.fog.dimmed.has(id)) return this.explainDimmed(id);
     const opened = hasChildren(model, id) && !this.expanded.has(id);
     if (opened) this.expanded.add(id);
     this.setSelected(id, true);
@@ -263,12 +479,12 @@ export class App {
 
   /** The chevron: open/close without changing what is selected (unless the selection gets hidden). */
   private toggle(id: string): void {
-    if (this.expanded.has(id)) this.collapse(id);
+    if (this.shown().has(id)) this.collapse(id);
     else this.activate(id);
   }
 
   private expand(id: string): void {
-    if (!this.model || !hasChildren(this.model, id) || this.expanded.has(id)) return;
+    if (!this.model || !hasChildren(this.model, id) || this.expanded.has(id) || this.fog.fogged.has(id)) return;
     this.expanded.add(id);
     this.persist(true);
     void this.refresh({ anchor: id, animate: true });
@@ -285,7 +501,7 @@ export class App {
 
   private expandAll(): void {
     if (!this.model) return;
-    for (const n of this.model.graph.nodes) if (hasChildren(this.model, n.id)) this.expanded.add(n.id);
+    for (const n of this.model.graph.nodes) if (hasChildren(this.model, n.id) && !this.fog.fogged.has(n.id) && !hiddenByFog(this.index, this.fog, n.id)) this.expanded.add(n.id);
     this.persist(true);
     // The whole picture changes, so re-pick the direction and skip the slide.
     this.chooseDirection = true;
@@ -312,6 +528,7 @@ export class App {
     this.seenBefore = false;
     this.liveEl.textContent = 'Showing the overview';
     this.renderSummary();
+    this.pane.selectionChanged();
     this.persist(true);
     void this.refresh({ focus: focusInSummary ? was : undefined });
   }
@@ -319,6 +536,10 @@ export class App {
   private hostSelect(id: string): void {
     if (!this.model?.byId.has(id)) {
       console.warn(`[filos] host asked to select unknown node "${id}"`);
+      return;
+    }
+    if (!selectable(this.index, this.fog, id)) {
+      console.warn(`[filos] host asked to select "${id}", which is still in fog`);
       return;
     }
     for (const a of ancestors(this.model, id)) this.expanded.add(a);
@@ -331,6 +552,8 @@ export class App {
   /** Selection from the summary pane: reveal it in the graph. */
   private selectFromSummary(id: string): void {
     if (!this.model?.byId.has(id)) return;
+    if (this.fog.dimmed.has(id)) return this.explainDimmed(id);
+    if (!selectable(this.index, this.fog, id)) return this.enterTerritory(id);
     for (const a of ancestors(this.model, id)) this.expanded.add(a);
     this.setSelected(id, true);
     // The summary is about to be rebuilt under the clicked link, so focus moves to the node.
@@ -348,13 +571,15 @@ export class App {
     if (tellHost) post({ type: 'select', id });
     this.liveEl.textContent = `Selected ${this.model?.byId.get(id)?.label ?? id}`;
     this.renderSummary();
+    this.pane.selectionChanged();
     this.persist(true);
   }
 
   private onNodeKey(id: string, ev: KeyboardEvent): void {
     const model = this.model;
     if (!model) return;
-    const order = visibleNodes(model, this.expanded).map((n) => n.id);
+    const shown = this.shown();
+    const order = visibleNodes(model, shown).map((n) => n.id);
     const i = order.indexOf(id);
     const focus = (target: string | undefined) => {
       if (!target) return;
@@ -370,12 +595,13 @@ export class App {
         break;
       case 'ArrowRight':
         ev.preventDefault();
-        if (hasChildren(model, id) && !this.expanded.has(id)) this.expand(id);
-        else if (isContainer(model, id, this.expanded)) focus(childrenOf(model, id)[0]?.id);
+        if (this.fog.fogged.has(id)) break;
+        if (hasChildren(model, id) && !shown.has(id)) this.expand(id);
+        else if (isContainer(model, id, shown)) focus(childrenOf(model, id)[0]?.id);
         break;
       case 'ArrowLeft':
         ev.preventDefault();
-        if (isContainer(model, id, this.expanded)) this.collapse(id);
+        if (isContainer(model, id, shown)) this.collapse(id);
         else focus(model.byId.get(id)?.parent);
         break;
       case 'ArrowDown':
@@ -405,25 +631,40 @@ export class App {
 
   private persist(notifyHost: boolean): void {
     const view = this.viewState();
-    savePersisted({ v: 1, key: this.key, view });
+    savePersisted({ v: 1, key: this.key, view, tab: this.pane.tab });
     if (notifyHost) post({ type: 'stateChanged', state: view });
   }
 
   private ctx(): RenderContext {
-    return { model: this.model!, expanded: this.expanded, selected: this.selected, visited: this.visited, fonts: this.fonts };
+    return { model: this.model!, expanded: this.shown(), selected: this.selected, visited: this.visited, fonts: this.fonts, fog: this.fog };
   }
 
-  private renderSummary(): void {
+  /** What the summary shows of the review: the selected territory's progress, the didactic map. */
+  private summaryReview(): SummaryReview | undefined {
+    const review = this.reviewSnap;
+    if (!review || !this.index) return undefined;
+    return { snapshot: review, index: this.index, fog: this.fog };
+  }
+
+  /** @param scrollTop false keeps the reader's place (a snapshot arrived, the selection didn't change) */
+  private renderSummary(scrollTop = true): void {
     if (!this.model) return;
+    this.summarySig = this.reviewSnap ? JSON.stringify([this.reviewSnap.mode, this.reviewSnap.territories]) : '';
+    const keep = scrollTop ? 0 : this.summaryEl.scrollTop;
+    const hadFocus = !scrollTop && this.summaryEl.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.focusKey : undefined;
     renderSummary(
       this.summaryEl,
-      { model: this.model, source: this.source, selected: this.selected, seenBefore: this.seenBefore },
+      { model: this.model, source: this.source, selected: this.selected, seenBefore: this.seenBefore, review: this.summaryReview() },
       {
         select: (id) => this.selectFromSummary(id),
         openAnchor: (id, anchorIndex) => post({ type: 'openAnchor', id, anchorIndex }),
         clearSelection: () => this.clearSelection(),
+        enter: (id) => this.enterTerritory(id),
+        showQuestions: () => this.pane.showTab('questions'),
       },
     );
+    this.summaryEl.scrollTop = keep;
+    if (hadFocus) this.summaryEl.querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(hadFocus)}"]`)?.focus({ preventScroll: true });
   }
 
   private applyHighlight(): void {
@@ -432,7 +673,7 @@ export class App {
     if (!model || !focus) return this.graph.highlight(undefined, undefined);
     // A container stands for everything drawn inside it; edge labels only for the node itself.
     const ids = new Set([focus]);
-    for (const n of visibleNodes(model, this.expanded)) if (ancestors(model, n.id).includes(focus)) ids.add(n.id);
+    for (const n of visibleNodes(model, this.shown())) if (ancestors(model, n.id).includes(focus)) ids.add(n.id);
     this.graph.highlight(ids, focus);
   }
 
@@ -445,7 +686,7 @@ export class App {
   private autoFit(animate = false, reveal?: string): void {
     this.viewport.fit(this.graph.bounds, animate, AUTO_FIT_MIN);
     const cropped = this.viewport.fitScale(this.graph.bounds) < AUTO_FIT_MIN;
-    const id = reveal ?? (cropped ? (this.selected ?? this.riskiest(visibleNodes(this.model!, this.expanded))) : undefined);
+    const id = reveal ?? (cropped ? (this.selected ?? this.riskiest(visibleNodes(this.model!, this.shown()))) : undefined);
     const box = id ? this.graph.boxes.get(id) : undefined;
     if (box) this.viewport.ensureVisible(box, animate);
   }
@@ -472,15 +713,16 @@ export class App {
   private layoutInputs(): { visible: GraphNode[]; inputs: LayoutNodeInput[]; edges: VisibleEdge[]; sig: string } {
     const model = this.model!;
     const ctx = this.ctx();
-    const visible = visibleNodes(model, this.expanded);
+    const shown = ctx.expanded;
+    const visible = visibleNodes(model, shown);
     const inputs = visible.map((n) => ({
       id: n.id,
       parent: visibleParent(ctx, n),
       ...nodeSize(n, ctx),
-      container: isContainer(model, n.id, this.expanded),
+      container: isContainer(model, n.id, shown),
       headerHeight: HEADER_H + 10,
     }));
-    const edges = liftEdges(model, this.expanded);
+    const edges = liftEdges(model, shown);
     return { visible, inputs, edges, sig: JSON.stringify([inputs, edges.map((e) => [e.id, e.from, e.to])]) };
   }
 
@@ -550,6 +792,7 @@ export class App {
     }
 
     if (opts.focus) this.graph.focusNode(opts.focus);
-    post({ type: 'rendered', visibleNodes: visible.map((n) => n.id), expanded: [...this.expanded], selected: this.selected });
+    this.placeSocrates();
+    post({ type: 'rendered', visibleNodes: visible.map((n) => n.id), expanded: [...ctx.expanded], selected: this.selected });
   }
 }

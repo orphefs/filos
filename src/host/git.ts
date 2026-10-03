@@ -230,3 +230,21 @@ export async function commitSubjects(root: string, base: string, head: string): 
 export async function hasUncommittedChanges(root: string): Promise<boolean> {
   return (await git(root, ['status', '--porcelain', '--untracked-files=normal'])).trim().length > 0;
 }
+
+/** The origin remote's URL (for the confidence store's repo key), or undefined without one. */
+export async function originUrl(root: string): Promise<string | undefined> {
+  try {
+    return (await git(root, ['remote', 'get-url', 'origin'])).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The full commit id HEAD points at, or undefined (e.g. an unborn branch). */
+export async function headCommit(root: string, opts: GitOptions = {}): Promise<string | undefined> {
+  try {
+    return (await git(root, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], opts)).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}

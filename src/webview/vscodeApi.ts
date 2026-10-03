@@ -1,6 +1,7 @@
 // The webview side of the VS Code API. acquireVsCodeApi may be called only once per page.
 
 import type { ViewState, WebviewToHost } from '../protocol';
+import type { PaneTab } from './paneContext';
 
 /** What we keep in the webview's own state, so a hidden/restored panel comes back as it was. */
 export interface PersistedState {
@@ -8,6 +9,8 @@ export interface PersistedState {
   /** Identifies the graph the view state belongs to. */
   key: string;
   view: ViewState;
+  /** The side pane's tab, whatever the PR. */
+  tab?: PaneTab;
 }
 
 interface VsCodeApi {
@@ -40,4 +43,12 @@ export function loadPersisted(): PersistedState | undefined {
 
 export function savePersisted(state: PersistedState): void {
   api.setState(state);
+}
+
+const TABS: readonly string[] = ['summary', 'questions', 'comments'];
+
+/** The side pane tab last shown, from any PR. */
+export function loadTab(): PaneTab | undefined {
+  const s = api.getState() as Partial<PersistedState> | undefined;
+  return s && typeof s.tab === 'string' && TABS.includes(s.tab) ? s.tab : undefined;
 }

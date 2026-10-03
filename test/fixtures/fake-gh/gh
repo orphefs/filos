@@ -1,0 +1,139 @@
+#!/usr/bin/env node
+// A stand-in for the GitHub CLI, for unit and e2e tests. It never talks to GitHub. See README.md.
+'use strict';
+
+const fs = require('node:fs');
+const { execFileSync } = require('node:child_process');
+
+const argv = process.argv.slice(2);
+const env = process.env;
+
+function modeNow() {
+  const file = env.FAKE_GH_MODE_FILE;
+  if (file) {
+    try {
+      const m = fs.readFileSync(file, 'utf8').trim();
+      if (m) return m;
+    } catch {
+      // missing file: fall back to the environment
+    }
+  }
+  return (env.FAKE_GH_MODE || 'ok').trim();
+}
+
+const mode = modeNow();
+const repo = env.FAKE_GH_REPO || 'acme/ledger';
+const host = env.FAKE_GH_HOST || 'github.com';
+const number = Number(env.FAKE_GH_PR_NUMBER || 42);
+
+function record(extra) {
+  const file = env.FAKE_GH_RECORD;
+  if (!file) return;
+  fs.appendFileSync(file, JSON.stringify({ argv, cwd: process.cwd(), mode, ...extra }) + '\n');
+}
+
+function out(obj) {
+  process.stdout.write(JSON.stringify(obj) + '\n');
+}
+
+function fail(code, stderr, stdout) {
+  if (stdout) process.stdout.write(stdout + '\n');
+  process.stderr.write(stderr + '\n');
+  process.exit(code);
+}
+
+function notLoggedIn() {
+  fail(4, 'To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.');
+}
+
+function headOid() {
+  if (env.FAKE_GH_HEAD_OID) return env.FAKE_GH_HEAD_OID;
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return '0'.repeat(40);
+  }
+}
+
+function branch() {
+  try {
+    return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return 'HEAD';
+  }
+}
+
+/** Only the fields asked for with --json, as gh does. */
+function pick(all) {
+  const i = argv.indexOf('--json');
+  const fields = i >= 0 && argv[i + 1] ? argv[i + 1].split(',') : Object.keys(all);
+  return Object.fromEntries(fields.filter((f) => f in all).map((f) => [f, all[f]]));
+}
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+if (mode === 'slow') sleep(Number(env.FAKE_GH_DELAY_MS || 60000));
+
+const [cmd, sub] = argv;
+
+if (cmd === '--version' || cmd === 'version') {
+  process.stdout.write('gh version 0.0.0-fake (2026-10-03)\n');
+  process.exit(0);
+}
+
+if (cmd === 'auth' && sub === 'status') {
+  record({});
+  if (mode === 'auth') fail(1, 'You are not logged into any GitHub hosts. To log in, run: gh auth login');
+  process.stdout.write(`${host}\n  ✓ Logged in to ${host} account fake (keyring)\n`);
+  process.exit(0);
+}
+
+if (cmd === 'pr' && sub === 'view') {
+  record({});
+  if (mode === 'auth') notLoggedIn();
+  if (mode === 'nopr') fail(1, `no pull requests found for branch "${branch()}"`);
+  if (mode === 'noremote') fail(1, 'none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use `gh auth login`');
+  const url = env.FAKE_GH_PR_URL || `https://${host}/${repo}/pull/${number}`;
+  out(pick({ number, url, headRefOid: headOid(), baseRefName: env.FAKE_GH_BASE || 'main', state: 'OPEN', title: 'Fake pull request' }));
+  process.exit(0);
+}
+
+if (cmd === 'repo' && sub === 'view') {
+  record({});
+  if (mode === 'auth') notLoggedIn();
+  out(pick({ nameWithOwner: repo, url: `https://${host}/${repo}` }));
+  process.exit(0);
+}
+
+if (cmd === 'api') {
+  const input = argv.includes('--input') && argv[argv.indexOf('--input') + 1] === '-' ? fs.readFileSync(0, 'utf8') : undefined;
+  record({ stdin: input });
+  if (mode === 'auth') notLoggedIn();
+  if (mode === 'apierror') {
+    fail(
+      1,
+      'gh: Unprocessable Entity (HTTP 422)',
+      JSON.stringify({ message: 'Unprocessable Entity', errors: ['Line could not be resolved'], documentation_url: 'https://docs.github.com/rest/pulls/reviews#create-a-review-for-a-pull-request', status: '422' }),
+    );
+  }
+  const path = argv.find((a) => /^repos\//.test(a)) || '';
+  const m = /^repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)\/reviews$/.exec(path);
+  if (!argv.includes('POST') || !m) fail(1, `gh: Not Found (HTTP 404)`, JSON.stringify({ message: 'Not Found' }));
+  let payload;
+  try {
+    payload = JSON.parse(input || '');
+  } catch {
+    fail(1, 'gh: Problems parsing JSON (HTTP 400)', JSON.stringify({ message: 'Problems parsing JSON' }));
+  }
+  if (payload.event !== 'COMMENT' || typeof payload.body !== 'string' || !Array.isArray(payload.comments)) {
+    fail(1, 'gh: Unprocessable Entity (HTTP 422)', JSON.stringify({ message: 'Unprocessable Entity', errors: ['bad review payload'] }));
+  }
+  const id = 1001;
+  out({ id, html_url: `https://${host}/${m[1]}/${m[2]}/pull/${m[3]}#pullrequestreview-${id}`, state: 'COMMENTED', body: payload.body, commit_id: payload.commit_id });
+  process.exit(0);
+}
+
+record({});
+fail(2, `fake gh: unsupported command: ${argv.join(' ')}`);

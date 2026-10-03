@@ -6,6 +6,8 @@ import * as vscode from 'vscode';
 import type { Anchor, FileOutline, GraphNode, ReviewGraph } from '../contract/graph';
 import { scoreGraph, type RiskScore } from '../contract/risk';
 import type { ErrorAction, GraphSource, HostToWebview, ViewState } from '../protocol';
+import type { PersistedReview } from '../review/model';
+import type { PullRequestLookup } from './github';
 
 export interface ReviewTarget {
   kind: 'sample' | 'branch';
@@ -45,6 +47,13 @@ export class ReviewSession {
   status: SessionStatus = { kind: 'loading', message: 'Preparing the review…' };
   state: ViewState;
   lastRendered?: RenderedInfo;
+  /** The PR diff base...head, when one was computed (agent runs); posting needs its head lines. */
+  diff?: string;
+  dependencyIndex?: string;
+  /** Key of the private confidence store: "sample:@acme/ledger", the normalised origin, or the repo root. */
+  repoKey: string;
+  /** Branch reviews: the pull request lookup, started with the session (gh is slow). */
+  pullRequest?: Promise<PullRequestLookup>;
 
   private nodes = new Map<string, GraphNode>();
   private children = new Map<string, GraphNode[]>();
@@ -53,8 +62,10 @@ export class ReviewSession {
   constructor(
     readonly target: ReviewTarget,
     private readonly store: vscode.Memento,
+    repoKey?: string,
   ) {
     this.state = store.get<ViewState>(this.storeKey) ?? EMPTY_STATE;
+    this.repoKey = repoKey ?? target.repoRoot;
   }
 
   /** Identifies the PR: same repo and range means the same review, so view state carries over. */
@@ -64,6 +75,20 @@ export class ReviewSession {
 
   private get storeKey(): string {
     return `filos.viewState:${this.key}`;
+  }
+
+  /** Questionnaire answers, comments and didactic progress: per PR, beside the view state. */
+  private get reviewKey(): string {
+    return `filos.review:${this.key}`;
+  }
+
+  /** Raw stored review state; ReviewModel validates it. */
+  loadReview(): unknown {
+    return this.store.get<unknown>(this.reviewKey);
+  }
+
+  saveReview(review: PersistedReview): Thenable<void> {
+    return this.store.update(this.reviewKey, review);
   }
 
   setLoading(message: string, detail?: string): void {

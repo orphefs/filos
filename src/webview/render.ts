@@ -5,6 +5,7 @@
 import type { GraphNode } from '../contract/graph';
 import type { RiskScore } from '../contract/risk';
 import { s } from './dom';
+import type { Fog } from './fog';
 import type { Box, Layout, Point } from './layout';
 import { CHANGE_WORD, childrenOf, describeNode, isContainer, type Model, type VisibleEdge } from './model';
 import { fit, measure, type Fonts } from './text';
@@ -15,6 +16,8 @@ export interface RenderContext {
   selected?: string;
   visited: ReadonlySet<string>;
   fonts: Fonts;
+  /** Didactic mode: fogged territories and dimmed externals. */
+  fog?: Fog;
 }
 
 export interface GraphHandlers {
@@ -35,7 +38,8 @@ const MAX_TITLE = 240;
 const MIN_W = 150;
 const CODE_KINDS = new Set(['function', 'class', 'type']);
 
-type Shape = 'leaf' | 'module' | 'container' | 'external';
+/** fog: an unexplored territory in didactic mode, drawn with its name only. */
+type Shape = 'leaf' | 'module' | 'container' | 'external' | 'fog';
 
 /** Everything a node shows, computed once and used for both sizing and drawing. */
 interface Face {
@@ -58,10 +62,31 @@ interface Face {
 function faceFor(node: GraphNode, ctx: RenderContext): Face {
   const { model, fonts } = ctx;
   const kids = childrenOf(model, node.id).length;
-  const shape: Shape =
-    node.kind === 'external' ? 'external' : kids > 0 ? (ctx.expanded.has(node.id) ? 'container' : 'module') : 'leaf';
+  const fogged = !!ctx.fog?.fogged.has(node.id);
+  const shape: Shape = fogged
+    ? 'fog'
+    : node.kind === 'external'
+      ? 'external'
+      : kids > 0
+        ? ctx.expanded.has(node.id)
+          ? 'container'
+          : 'module'
+        : 'leaf';
   const titleFont = CODE_KINDS.has(node.kind) ? fonts.code : fonts.label;
   const t = fit(node.label, titleFont, MAX_TITLE);
+  if (fogged) {
+    // Name only: no risk, change badge, child count or consumers until the territory is explored.
+    return {
+      shape,
+      title: t.text,
+      titleFull: node.label,
+      truncated: t.truncated,
+      titleFont,
+      sub: 'unexplored',
+      visited: false,
+      w: { title: measure(t.text, titleFont), badge: 0, count: 0, risk: 0, ext: 0, sub: measure('unexplored', fonts.small) },
+    };
+  }
   const risk = node.kind === 'external' ? undefined : model.risk.get(node.id);
   const ext = model.externalsOf.get(node.id)?.size ?? 0;
   const uses = node.kind === 'external' ? model.graph.edges.filter((e) => e.from === node.id).length : 0;
@@ -90,6 +115,8 @@ function faceFor(node: GraphNode, ctx: RenderContext): Face {
 }
 
 const CHEVRON_W = 16;
+const FOG_GLYPH_W = 18;
+export const FOG_PATTERN_ID = 'filos-fog-hatch';
 const METER_W = 14;
 const VISITED_W = 14;
 
@@ -105,6 +132,8 @@ export function nodeSize(node: GraphNode, ctx: RenderContext): { width: number; 
   switch (f.shape) {
     case 'external':
       return { width: Math.max(MIN_W, PAD_X * 2 + Math.max(18 + f.w.title, f.w.sub)), height: LEAF_H };
+    case 'fog':
+      return { width: Math.ceil(Math.max(MIN_W, PAD_X * 2 + Math.max(f.w.title, FOG_GLYPH_W + f.w.sub))), height: MODULE_H };
     case 'container':
       return { width: PAD_X * 2 + titleRow + 16 + riskRowWidth(f) + 12 + f.w.badge, height: HEADER_H + 24 };
     default: {
@@ -222,7 +251,7 @@ export class GraphView {
     this.edgeLayer = s('g', { class: 'layer-edges', 'aria-hidden': 'true' });
     this.nodeLayer = s('g', { class: 'layer-nodes' });
     this.world = s('g', { class: 'world' }, this.bgLayer, this.edgeLayer, this.nodeLayer);
-    this.svg = s('svg', { class: 'graph-svg', role: 'group', 'aria-label': 'Review graph', 'aria-roledescription': 'graph' }, this.world);
+    this.svg = s('svg', { class: 'graph-svg', role: 'group', 'aria-label': 'Review graph', 'aria-roledescription': 'graph' }, fogDefs(), this.world);
 
     this.nodeLayer.addEventListener('click', (ev) => {
       const el = (ev.target as Element).closest<SVGGElement>('[data-node-id]');
@@ -378,23 +407,34 @@ export class GraphView {
   private drawNode(node: GraphNode, f: Face, box: Box, ctx: RenderContext): SVGGElement {
     const selected = ctx.selected === node.id;
     const isCont = f.shape === 'container';
+    const fogged = f.shape === 'fog';
+    const dimmed = !!ctx.fog?.dimmed.has(node.id);
     const cls = ['node', `node--${f.shape}`, `kind--${node.kind}`, `change--${node.change}`];
     if (selected) cls.push('is-selected');
     if (f.visited) cls.push('is-visited');
     if (f.risk) cls.push(`band-${f.risk.band}`);
+    if (dimmed) cls.push('is-dimmed');
+    let label = describeNode(ctx.model, node, { visited: f.visited });
+    if (fogged) label = `${node.label}, unexplored territory`;
+    else if (dimmed) label = `${node.label}, outside this repo, not revealed yet`;
     const g = s('g', {
       class: cls.join(' '),
       role: 'button',
       tabindex: 0,
       'data-node-id': node.id,
       'data-kind': node.kind,
-      'aria-label': describeNode(ctx.model, node, { visited: f.visited }),
+      'data-fog': fogged ? 'fogged' : dimmed ? 'dimmed' : undefined,
+      'aria-label': label,
       'aria-pressed': selected ? 'true' : 'false',
       'aria-current': selected ? 'true' : undefined,
       'aria-expanded': f.count ? String(isCont) : undefined,
     });
     setTint(g, f.risk?.level);
-    const tip = [f.titleFull, node.risk.why].filter(Boolean).join('\n');
+    const tip = fogged
+      ? `${f.titleFull}\nUnexplored. Click to enter: you'll answer a question before you see the code.`
+      : dimmed
+        ? `${f.titleFull}\nOutside this repo. Revealed once a territory it uses is explored.`
+        : [f.titleFull, node.risk.why].filter(Boolean).join('\n');
     g.append(s('title', {}, tip));
 
     const w = box.width;
@@ -416,6 +456,15 @@ export class GraphView {
       g.append(...riskRow(f, x, cy + 4));
       const b = badge(f, w - PAD_X - f.w.badge, cy - 7.5);
       if (b) g.append(b);
+      return g;
+    }
+
+    if (fogged) {
+      g.append(s('rect', { class: 'bg', width: w, height: h, rx: 6 }));
+      g.append(s('rect', { class: 'fog-hatch', width: w, height: h, rx: 6 }));
+      g.append(s('text', { class: 'title title--module', x: PAD_X, y: 22 }, f.title));
+      g.append(fogGlyph(PAD_X, 33));
+      g.append(s('text', { class: 'meta fog-sub', x: PAD_X + FOG_GLYPH_W, y: 43 }, f.sub));
       return g;
     }
 
@@ -448,9 +497,13 @@ export class GraphView {
   private drawEdge(e: VisibleEdge, pts: Point[], ctx: RenderContext, animate: boolean): SVGGElement {
     const n = e.edges.length;
     const width = Math.min(4.5, 1.5 + (n - 1) * 0.9);
+    const fog = ctx.fog;
+    // Into or out of fog: faint, and without the names, labels or counts of what's inside.
+    const foggy = !!fog && [e.from, e.to].some((id) => fog.fogged.has(id) || fog.dimmed.has(id));
     const cls = ['edge', `edge--${e.kind}`];
     if (e.lifted) cls.push('edge--lifted');
-    if (n > 1) cls.push('edge--merged');
+    if (n > 1 && !foggy) cls.push('edge--merged');
+    if (foggy) cls.push('edge--fog');
     if (animate) cls.push('appear');
     const g = s('g', { class: cls.join(' '), 'data-from': e.from, 'data-to': e.to, 'data-edge-id': e.id });
     g.style.setProperty('--edge-w', `${width}px`);
@@ -466,7 +519,9 @@ export class GraphView {
     const d = roundedPath(trimmed, 6);
 
     const name = (id: string) => ctx.model.byId.get(id)?.label ?? id;
-    const lines = e.edges.map((x) => `${name(x.from)} ${verb(x.kind)} ${name(x.to)}${x.label ? `: ${x.label}` : ''}`);
+    const lines = foggy
+      ? [`${name(e.from)} → ${name(e.to)} (not explored yet)`]
+      : e.edges.map((x) => `${name(x.from)} ${verb(x.kind)} ${name(x.to)}${x.label ? `: ${x.label}` : ''}`);
     g.append(s('title', {}, lines.join('\n')));
     g.append(s('path', { class: 'edge-hit', d }));
     g.append(s('path', { class: 'edge-line', d }));
@@ -481,6 +536,7 @@ export class GraphView {
     );
 
     const mid = longestSegmentMidpoint(pts);
+    if (foggy) return g;
     if (n > 1) {
       // Merged edges show how many connections they stand for; the tooltip lists them.
       g.append(
@@ -573,6 +629,33 @@ function roundedPath(pts: Point[], r: number): string {
   }
   const end = pts[pts.length - 1];
   return `${d} L${end.x} ${end.y}`;
+}
+
+/** The hatch pattern fogged territories are filled with. Its lines take their colour from CSS. */
+function fogDefs(): SVGDefsElement {
+  return s(
+    'defs',
+    {},
+    s(
+      'pattern',
+      { id: FOG_PATTERN_ID, width: 7, height: 7, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' },
+      s('line', { class: 'fog-line', x1: 0, y1: 0, x2: 0, y2: 7 }),
+    ),
+  );
+}
+
+/** The cloud as a standalone inline icon, for HTML text (the map list, fogged question groups). */
+export function fogIcon(): SVGSVGElement {
+  return s('svg', { class: 'fog-icon', width: 15, height: 12, viewBox: '0 0 15 12', 'aria-hidden': 'true', focusable: 'false' }, fogGlyph(0.5, 0.5));
+}
+
+/** A small cloud: the "unexplored" cue, so fog doesn't rest on the hatch (or colour) alone. */
+export function fogGlyph(x: number, y: number): SVGGElement {
+  return s(
+    'g',
+    { class: 'fog-glyph', transform: `translate(${x},${y})`, 'aria-hidden': 'true' },
+    s('path', { d: 'M3 10 H11.5 A2.6 2.6 0 0 0 11.2 4.9 A3.6 3.6 0 0 0 4.4 4.4 A2.9 2.9 0 0 0 3 10 Z' }),
+  );
 }
 
 function roundedTop(w: number, h: number, r: number): string {

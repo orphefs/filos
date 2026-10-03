@@ -99,7 +99,7 @@ function makeWorkspace(dir: string): void {
   writeFileSync(join(dir, 'README.md'), '# @acme/ledger\n\nAn uncommitted edit, so the review has something to warn about.\n');
 }
 
-function userSettings(fakeClaude: string): Record<string, unknown> {
+function userSettings(fakeClaude: string, fakeGh: string): Record<string, unknown> {
   return {
     'workbench.startupEditor': 'none',
     'workbench.tips.enabled': false,
@@ -116,6 +116,9 @@ function userSettings(fakeClaude: string): Record<string, unknown> {
     // The agent path runs the fake CLI; its mode is switched per test through process.env.
     'filos.claude.path': fakeClaude,
     'filos.agentTimeoutSeconds': 60,
+    // Branch reviews look their pull request up with gh, and posting runs `gh api`: never the real
+    // one from a test. The fake answers a PR (acme/ledger#42) and records what it was sent.
+    'filos.gh.path': fakeGh,
   };
 }
 
@@ -144,7 +147,8 @@ async function main(): Promise<number> {
   mkdirSync(join(userData, 'User'), { recursive: true });
 
   const fakeClaude = join(ROOT, 'test', 'fixtures', 'fake-claude', 'claude');
-  writeFileSync(join(userData, 'User', 'settings.json'), JSON.stringify(userSettings(fakeClaude), null, 2));
+  const fakeGh = join(ROOT, 'test', 'fixtures', 'fake-gh', 'gh');
+  writeFileSync(join(userData, 'User', 'settings.json'), JSON.stringify(userSettings(fakeClaude, fakeGh), null, 2));
   makeWorkspace(workspace);
   let extensionPath = ROOT;
   if (vsix) {
@@ -170,8 +174,14 @@ async function main(): Promise<number> {
         FILOS_E2E_CDP_PORT: String(cdpPort),
         FILOS_E2E_GREP: grep ?? '',
         FILOS_E2E_FAKE_CLAUDE: fakeClaude,
+        FILOS_E2E_FAKE_GH: fakeGh,
+        // A scratch directory of this run (removed afterwards), e.g. for the fake gh's call record.
+        FILOS_E2E_RUN: run,
         FAKE_CLAUDE_MODE: 'ok',
         FAKE_CLAUDE_GRAPH: join(ROOT, 'fixtures', 'sample-graph.json'),
+        // The questions task answers the sample's hand-written set, valid for the graph above.
+        FAKE_CLAUDE_QUESTIONS: join(ROOT, 'fixtures', 'sample-questions.json'),
+        FAKE_GH_MODE: 'ok',
       },
       launchArgs: [
         workspace,

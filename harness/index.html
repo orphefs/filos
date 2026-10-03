@@ -10,6 +10,7 @@
       content="default-src 'none'; script-src 'nonce-filosharness'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self';"
     />
     <title>Filos webview harness</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="../dist/webview.css" />
     <link rel="stylesheet" href="harness.css" />
   </head>
@@ -39,6 +40,24 @@
         <label>Select <select id="h-select-id" aria-label="Node to select"></select></label>
         <button type="button" id="h-select">Host select</button>
       </fieldset>
+      <fieldset>
+        <legend>Review (real ReviewModel)</legend>
+        <button type="button" id="h-mode-fast" aria-pressed="true">Fast</button>
+        <button type="button" id="h-mode-didactic" aria-pressed="false">Didactic</button>
+        <button type="button" id="h-agent" aria-pressed="false" title="Agent-sourced review: open answers and threads go to the (simulated) agent">Agent</button>
+        <button type="button" id="h-agent-fails" aria-pressed="false" title="Simulated agent calls fail (expired login)">Agent fails</button>
+        <button type="button" id="h-target" aria-pressed="false" title="Post target: a fake GitHub PR instead of the sample's 'none'">GitHub PR</button>
+        <button type="button" id="h-post-fails" aria-pressed="false" title="Simulated posting fails">Post fails</button>
+        <label>Questions
+          <select id="h-questions" aria-label="Questions status">
+            <option value="ready">ready</option>
+            <option value="loading">loading</option>
+            <option value="error">error</option>
+            <option value="none">none</option>
+          </select>
+        </label>
+        <button type="button" id="h-review-reset" title="Forget answers, comments, exploration and confidence">Reset review</button>
+      </fieldset>
       <button type="button" id="h-reset" title="Forget host and webview state, then reload">Reset state</button>
     </div>
     <div class="harness-stage">
@@ -52,8 +71,14 @@
         <button type="button" id="h-log-clear">Clear</button>
       </header>
       <ol id="host-log"></ol>
+      <details id="h-export" class="harness-export" hidden>
+        <summary>Exported Markdown (what the host would copy and open)</summary>
+        <button type="button" id="h-export-close">Close</button>
+        <pre id="h-export-text"></pre>
+      </details>
     </section>
-    <script nonce="filosharness" src="host.js"></script>
+    <!-- The mock host: harness/host.ts bundled with the real ReviewModel (node esbuild.mjs). -->
+    <script nonce="filosharness" src="../dist/harness-host.js"></script>
     <script nonce="filosharness" src="../dist/webview.js"></script>
   </body>
 </html>

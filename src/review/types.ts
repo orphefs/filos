@@ -58,6 +58,8 @@ export interface DraftComment {
   thread: ThreadMessage[];
   /** The agent is replying in the thread. */
   threadPending?: boolean;
+  /** Already posted to the PR: a later post leaves it out. Set in snapshots only. */
+  posted?: boolean;
 }
 
 /** A top-level module of the graph: a territory on the didactic map. */
@@ -89,7 +91,13 @@ export interface PostState {
 
 export interface ReviewSnapshot {
   mode: Mode;
-  depth: { proposed: Depth; why: string; chosen: Depth };
+  depth: {
+    proposed: Depth;
+    why: string;
+    chosen: Depth;
+    /** Questions each depth would ask (the question set's own), for the depth menu. Absent while there is no set. */
+    counts?: Partial<Record<Depth, number>>;
+  };
   /** Questions at the chosen depth, ordered for asking (riskiest node first, predict before check). */
   questions: Question[];
   answers: Record<string, AnswerState>;
