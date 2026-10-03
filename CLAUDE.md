@@ -4,7 +4,7 @@
 
 ## Status
 
-**Design phase, with a throwaway-quality prototype to react to.** UX comes first. At Orfeas's request (2026-10-03), build-order slices 1–3 were prototyped on branch `prototype` so the UX can be judged in real VS Code. Its UX choices are provisional (listed below), not decided. Beyond the prototype, don't write more extension code until the core screens are agreed. When discussing UX, prefer quick visual mockups (static HTML) over prose.
+**Design phase, with a throwaway-quality prototype to react to.** UX comes first. At Orfeas's request (2026-10-03), build-order slices 1–3, then 4 and 6, were prototyped (now on `main`) so the UX can be judged in real VS Code. Their UX choices are provisional (listed below and in `docs/review-and-didactic.md`), not decided. Beyond the prototype, don't write more extension code until the core screens are agreed. When discussing UX, prefer quick visual mockups (static HTML) over prose.
 
 ## The problem
 
@@ -79,7 +79,7 @@ PR review volume keeps growing, and the reviewer's mental model of the codebase 
 - How the questionnaire chooses what to ask.
 - Name availability on the VS Code Marketplace (check in VS Code's extension search).
 
-## Prototype (branch `prototype`)
+## Prototype
 
 What exists: the bundled sample PR (`fixtures/`), contract v0.1 (`docs/graph-contract.md`, `schema/`), the webview graph and summary, the native-editor code pane with folds and gists, the `claude` CLI provider, unit tests (`npm run test:unit`) and an e2e suite in real headless VS Code (`npm run test:e2e`). The webview alone runs with `npm run harness`.
 
@@ -107,6 +107,24 @@ Measured: the real comprehension pass on the sample PR (10 files) costs about $0
   - The selection's anchors get a whole-line red tint.
 - **Workspace trust:** the sample works in Restricted Mode; Review Current Branch needs a trusted workspace (it runs git and the agent CLI there).
 - **Dependency index:** `.filos/dependency-index.json`, format drafted in `docs/dependency-index.md`.
+
+### Slices 4 and 6 (questionnaire, comments, posting, didactic mode)
+
+Specified in `docs/review-and-didactic.md`; question contract in `docs/questions-contract.md`; the sample's questions in `fixtures/sample-questions.json`. The main provisional choices:
+
+- **Questions:** two kinds and two stages (understand or judge; predict or check).
+  - Multiple choice is graded locally and costs nothing. A first wrong answer gets a Socratic hint and a retry.
+  - Open answers are graded by the agent. The sample has no agent, so there the reviewer self-checks against a reference answer.
+- **Comments:** judge choices draft comments, and so do agent drafts and reviewer notes. Each can be accepted, rejected, amended or discussed with the agent; "Use this version" adopts the agent's proposal.
+- **Posting:** only accepted comments are posted, through `gh api` after a modal confirmation. Comments on lines outside the diff go into the review body. The sample offers Markdown export instead.
+- **Didactic mode:**
+  - Territories are the top-level modules. Unexplored ones are fogged: only their name shows, with no risk or detail.
+  - Entering a territory asks about familiarity (skipped if a stored record exists), then one predict question. The code opens only after that.
+  - Socrates stands beside the current territory. Progress is "Explored n of N".
+- **Confidence:** stored per module path in `globalState`, holding only module path, confidence and last-touched date. Familiarity sets the start value (0.2 / 0.5 / 0.8). Understand answers then add +0.15 for right first time, +0.05 for right on the retry, and −0.10 for wrong.
+- **Depth:** the question set proposes skim, standard or deep, and the depth menu overrides it. The sample's split is 4 / 12 / 14 questions.
+
+The live agent tasks (questions, grading, drafting, threads) are untested against the real model, because the `claude` CLI was logged out during the build. They pass against the fake CLI.
 
 ### Open UX questions raised by the prototype
 

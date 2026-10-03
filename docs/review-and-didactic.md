@@ -37,12 +37,16 @@ Questions are also staged:
 ## Comments
 
 - **Sources:** a judge choice with a `comment` seed, the agent ("Draft comments with agent", from the answers), and the reviewer's own notes.
-- **Statuses:** draft, accepted and rejected. "Undo" reopens a comment, and amending sets `amended`.
+- **Statuses:** draft, accepted and rejected. "Undo" reopens a comment, and amending sets `amended`. A posted comment can't be undone, amended or replaced by a changed judgement: it is on GitHub.
 - **Threads:** the reviewer writes, and the agent replies, optionally with a full rewritten comment as a `proposal`. "Use this version" adopts it as the body.
 - **Posting (GitHub, via `gh`):**
   - Only accepted comments are posted.
-  - A comment with `file`/`line` on a head line inside the PR's diff becomes an inline comment. Otherwise it goes into the review body, as "`file:line`: …".
-  - The host shows a modal confirmation that names the repo, the PR number and the comment count, then calls `gh api repos/{owner}/{repo}/pulls/{n}/reviews` with `event: COMMENT`.
+  - A branch review resolves HEAD to a commit once, when it computes the diff (`base...<commit>`). Each anchored comment records that commit (`commit`).
+  - A comment with `file`/`line` on a head line inside the PR's diff becomes an inline comment, when its commit is the reviewed one and the PR's head is still that commit. Otherwise it goes into the review body, as "`file:line`: …". The diff is computed with GitHub's hunk shape (`-U3`, no merged hunks, the default algorithm), whatever the user's `diff.*` settings.
+  - At post time the host looks up the PR the panel names again, by its URL (not whatever branch is checked out now). A merged or closed PR is not posted to, at review start or at post time.
+  - The host shows a modal confirmation that names the repo, the PR number and the comment count, then calls `gh api repos/{owner}/{repo}/pulls/{n}/reviews` with `event: COMMENT`. Anything to weigh first leads the modal and the question says "anyway": the PR changed since the review, comments from an earlier commit, or an earlier post that may have landed.
+  - From Post until the post ends, the comments being posted can't change; what is sent is read from the model when it is sent, and only those comments are marked posted.
+  - A post that ends without a clear answer (gh killed at the timeout, a 5xx, a broken connection) marks its comments as maybe posted. The error says the review may have reached GitHub, and the next confirmation warns before posting them again.
   - The sample has no PR, so its target is `none` with a reason, and Export is offered instead.
 - **Export:** Markdown of the accepted comments, plus drafts marked as such. It's copied to the clipboard and opened as an untitled document.
 
@@ -80,7 +84,7 @@ Each task has its own schema and validator, and each prompt treats the diff, cod
 | --- | --- | --- | --- |
 | `questions` | read | graph, diff, dependency index | `QuestionSet` (node ids must exist; choice rules) |
 | `evaluate` | none | question, reference/choices, node summary, code excerpt, answer, attempt | `{ verdict, reply, comment? }` |
-| `draftComments` | none | graph summary, answered questions, notes, existing drafts | `{ comments: [...] }`, new ones only |
+| `draftComments` | none | graph summary, answered questions, notes (already drafts: context only), existing drafts | `{ comments: [...] }`, new ones only |
 | `thread` | none | comment, node summary, code excerpt, thread, message | `{ reply, proposal? }` |
 
 - **When questions are generated:** for an agent-sourced graph, the `questions` task starts as soon as the graph loads, and the snapshot shows `questionsStatus: loading` until it finishes. The sample uses `fixtures/sample-questions.json`.
@@ -88,5 +92,7 @@ Each task has its own schema and validator, and each prompt treats the diff, cod
 
 ## Persistence
 
-- **Per PR** (`workspaceState`, same key as the view state): chosen depth, answers, comments, explored territories and familiarity answers.
+- **Per PR** (`workspaceState`, same key as the view state): chosen depth, answers, comments, explored territories, familiarity answers, and the ids of posted (and maybe posted) comments.
+  - Each answer keeps a fingerprint of the question it answered. A re-run may reuse an id for a different question; the old answer, and the drafts it made that are still only drafts, are dropped.
+  - Posted marks only grow: a save keeps the marks already stored for the same comments. A review that was closed or re-run while its post ran writes only its posted marks, so it never overwrites a newer review of the PR. An agent grading cancelled that way leaves the answer unanswered.
 - **Global** (`globalState`): mode (fast or didactic) and the confidence store.

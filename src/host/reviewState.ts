@@ -20,8 +20,7 @@ import { reviewToMarkdown } from '../review/markdown';
 import { ReviewModel, type QuestionsStatus, type ReviewEffect } from '../review/model';
 import type { DraftComment, PostTarget, ReviewSnapshot } from '../review/types';
 import { globalConfidenceStore } from './confidenceStore';
-import * as git from './git';
-import { confirmationText, detectPullRequest, GhError, planPost, postReview, postTargetOf, type PullRequestLookup, type ReviewPayload } from './github';
+import { confirmationText, detectPullRequest, GhError, planPost, postReview, postTargetOf, samePullRequest, type PullRequest, type PullRequestLookup, type ReviewPayload } from './github';
 import type { ReviewSession } from './session';
 
 export const MODE_STATE_KEY = 'filos.mode';
@@ -72,6 +71,8 @@ export class ReviewState implements vscode.Disposable {
   private lastSent?: string;
   private lastSaved: string;
   private postInFlight = false;
+  /** The open pull request the panel names as the post target (looked up when the review started). */
+  private pr?: PullRequest;
   private loginNotice = false;
   private readonly running = new Set<Promise<unknown>>();
   private reader?: (path: string) => string | undefined;
@@ -92,6 +93,7 @@ export class ReviewState implements vscode.Disposable {
       confidence: globalConfidenceStore(host.globalState, session.repoKey, (e) => host.log.warn(`saving confidence failed: ${String(e)}`)),
       agentAvailable: source === 'agent',
       post: this.initialPostTarget(),
+      headOid: session.headOid,
       now: () => new Date().toISOString(),
     });
     // Only real changes are written back: opening a review must not store anything by itself.
@@ -168,8 +170,14 @@ export class ReviewState implements vscode.Disposable {
   private async usePullRequest(lookup: Promise<PullRequestLookup>): Promise<void> {
     const result = await lookup;
     if (!this.alive || this.postInFlight) return;
-    this.host.log.info(result.ok ? `pull request: ${result.pr.owner}/${result.pr.repo}#${result.pr.number} (head ${result.pr.headRefOid.slice(0, 7)})` : `no pull request to post to: ${result.reason}`);
-    this.model.setPostState({ target: postTargetOf(result), status: 'idle' });
+    const target = postTargetOf(result);
+    this.pr = result.ok && target.kind === 'github' ? result.pr : undefined;
+    this.host.log.info(
+      result.ok
+        ? `pull request: ${result.pr.owner}/${result.pr.repo}#${result.pr.number} (${result.pr.state ?? 'state unknown'}, head ${result.pr.headRefOid.slice(0, 7)}${result.pr.headRefName ? ` on ${result.pr.headRefName}` : ''})`
+        : `no pull request to post to: ${result.reason}`,
+    );
+    this.model.setPostState({ target, status: 'idle' });
     this.changed();
   }
 
@@ -177,12 +185,14 @@ export class ReviewState implements vscode.Disposable {
 
   /** Stores the review if it changed, then sends the snapshot if it changed (or `force`). */
   private changed(force = false): void {
-    // Storage even after dispose: a post that lands after the panel closed must still be recorded.
     const persisted = this.model.persisted();
     const saved = JSON.stringify(persisted);
     if (saved !== this.lastSaved) {
       this.lastSaved = saved;
-      this.session.saveReview(persisted).then(undefined, (e: unknown) => this.host.log.warn(`saving the review failed: ${String(e)}`));
+      // After dispose a newer review of this PR may own the stored state: only what a post did (one
+      // that lands after the panel closed must still be recorded) is merged into it.
+      const write = this.alive ? this.session.saveReview(persisted) : this.session.savePostedMarks(persisted);
+      write.then(undefined, (e: unknown) => this.host.log.warn(`saving the review failed: ${String(e)}`));
     }
     if (!this.alive) return;
     const snap = this.model.snapshot();
@@ -310,7 +320,11 @@ export class ReviewState implements vscode.Disposable {
       evaluateAnswer(p, { repoRoot: this.session.target.repoRoot, question: q, nodeSummary: nodeSummary(node), codeExcerpt: this.excerptFor(node), answer: text, attempt, signal }),
     );
     if (r.ok) this.model.applyEvaluation(questionId, r.value);
-    else {
+    else if (r.kind === 'cancelled' || !this.alive) {
+      // Closed or re-run while grading: the answer goes back to unanswered, to be graded another
+      // time. A self-check here would show the reference before the reviewer was graded.
+      this.model.dropEvaluation(questionId);
+    } else {
       this.model.failEvaluation(questionId, r.message);
       this.warn(r, 'Your answer is kept: compare it with the reference instead.');
     }
@@ -372,48 +386,60 @@ export class ReviewState implements vscode.Disposable {
   // ---- posting and export ---------------------------------------------------------------------
 
   /**
-   * Looks the PR up again (it may have moved since the review opened), shows a modal naming the
-   * repo, the PR and the comment counts, and only then runs `gh api`. Never with zero comments.
+   * Looks the PR the panel names up again (by its URL, whatever is checked out now: it may have
+   * moved, or been merged), shows a modal naming the repo, the PR and the comment counts, with any
+   * warning first, and only then runs `gh api`. Never with zero comments. What is sent is read from
+   * the model when it is sent; the comments being posted can't change meanwhile.
    */
-  private async post(comments: DraftComment[]): Promise<void> {
+  private async post(_clicked: DraftComment[]): Promise<void> {
     if (this.postInFlight) return;
     const target = this.model.snapshot().post.target;
-    const end = (t: PostTarget, status: 'idle' | 'error', error?: string) => {
-      this.model.setPostState({ target: t, status, ...(error ? { error } : {}) });
+    const end = (t: PostTarget, status: 'idle' | 'error', error?: string, outcome: { sent?: string[]; uncertain?: boolean } = {}) => {
+      if (t.kind !== 'github') this.pr = undefined;
+      this.model.setPostState({ target: t, status, ...(error ? { error } : {}) }, outcome);
       this.changed();
       if (error) void vscode.window.showErrorMessage(`Filos: ${error}`);
     };
-    if (target.kind !== 'github') return end(target, 'idle');
-    if (!comments.length) {
-      end(target, 'idle');
-      const allPosted = this.model.snapshot().comments.some((c) => c.status === 'accepted' && this.model.isPosted(c.id));
-      void vscode.window.showInformationMessage(allPosted ? 'Filos: every accepted comment is already posted.' : 'Filos: there is nothing to post yet. Accept at least one comment first.');
-      return;
-    }
-    const s = this.session;
-    if (!s.diff) return end(target, 'error', 'Filos has no diff for this review, so it cannot place comments. Use Export instead.');
-
-    // 'posting' from here, so the model refuses a second post meanwhile and marks exactly these
-    // comments as posted. The webview shows it while the modal is up; cancelling goes back to idle.
+    const reviewed = this.pr;
+    if (target.kind !== 'github' || !reviewed) return end(target, 'idle');
+    // 'posting' from here, so the model refuses a second post and any change to these comments
+    // meanwhile. The webview shows it while the modal is up; cancelling goes back to idle.
     this.postInFlight = true;
     this.model.setPostState({ target, status: 'posting' });
+    // Another review of this PR (an earlier panel whose post finished late) may have posted some.
+    this.model.adoptPostedMarks(this.session.loadReview());
     this.changed();
     try {
+      let comments = this.model.postingComments();
+      if (!comments.length) {
+        end(target, 'idle');
+        const allPosted = this.model.snapshot().comments.some((c) => c.status === 'accepted' && this.model.isPosted(c.id));
+        void vscode.window.showInformationMessage(allPosted ? 'Filos: every accepted comment is already posted.' : 'Filos: there is nothing to post yet. Accept at least one comment first.');
+        return;
+      }
+      const s = this.session;
+      if (!s.diff) return end(target, 'error', 'Filos has no diff for this review, so it cannot place comments. Use Export instead.');
       let gh: string;
       try {
         gh = this.host.ghPath();
       } catch (e) {
         return end(target, 'error', safeProgressText(errorText(e), 240));
       }
-      const lookup = await detectPullRequest({ gh, cwd: s.target.repoRoot });
+      const lookup = await detectPullRequest({ gh, cwd: s.target.repoRoot }, reviewed);
       if (!lookup.ok) return end(target, 'error', lookup.reason);
       const pr = lookup.pr;
+      if (!samePullRequest(pr, reviewed)) return end(target, 'error', `GitHub answered with ${pr.owner}/${pr.repo}#${pr.number}, not the pull request this review is for (#${reviewed.number}), so Filos didn't post.`);
       const fresh = postTargetOf(lookup);
-      const headOid = await git.headCommit(s.target.repoRoot);
-      const plan = planPost(pr, comments, diffHeadLines(s.diff), { headOid, base: s.target.base });
-      const text = confirmationText(pr, plan);
+      if (fresh.kind !== 'github') return end(fresh, 'error', fresh.reason);
+
+      comments = this.model.postingComments();
+      const plan = planPost(pr, comments, diffHeadLines(s.diff), { headOid: s.headOid, base: s.target.base });
+      const text = confirmationText(pr, plan, { maybePosted: comments.filter((c) => this.model.mayBePosted(c.id)).length });
       this.lastConfirmation = text;
       if (!(await this.host.confirm(text.message, text.detail, 'Post review'))) return end(fresh, 'idle');
+      if (JSON.stringify(this.model.postingComments()) !== JSON.stringify(comments)) {
+        return end(fresh, 'error', 'The comments changed while the confirmation was open, so nothing was posted. Post again to send them as they are now.');
+      }
 
       const record: PostRecord = { at: Date.now(), args: plan.request.args, payload: plan.request.payload };
       this.lastPost = record;
@@ -421,7 +447,7 @@ export class ReviewState implements vscode.Disposable {
         // Not cancellable: a post killed half way may still land, and would then be posted twice.
         const res = await postReview(pr, plan.request, { gh, cwd: s.target.repoRoot });
         record.url = res.url;
-        this.model.setPostState({ target: fresh, status: 'posted', ...(res.url ? { url: res.url } : {}) });
+        this.model.setPostState({ target: fresh, status: 'posted', ...(res.url ? { url: res.url } : {}) }, { sent: comments.map((c) => c.id) });
         this.changed();
         this.host.log.info(`posted a review to ${pr.owner}/${pr.repo}#${pr.number}: ${plan.inline} inline, ${plan.general} in the body${plan.mismatch ? ` (${plan.mismatch})` : ''}`);
         const open = 'Open on GitHub';
@@ -429,10 +455,12 @@ export class ReviewState implements vscode.Disposable {
           if (c === open && res.url) void vscode.env.openExternal(vscode.Uri.parse(res.url));
         });
       } catch (e) {
-        const message = e instanceof GhError ? e.message : `Posting failed: ${safeProgressText(errorText(e), 200)}`;
+        const uncertain = !(e instanceof GhError) || e.uncertain;
+        const base = e instanceof GhError ? e.message : `Posting failed: ${safeProgressText(errorText(e), 200)}`;
+        const message = uncertain ? `${base} The review may still have reached GitHub: check the pull request before posting again.` : base;
         record.error = message;
-        this.host.log.error(`posting the review failed: ${message}${e instanceof GhError && e.detail ? `\n${e.detail}` : ''}`);
-        end(fresh, 'error', message);
+        this.host.log.error(`posting the review failed${uncertain ? ' (outcome unknown)' : ''}: ${base}${e instanceof GhError && e.detail ? `\n${e.detail}` : ''}`);
+        end(fresh, 'error', message, { sent: comments.map((c) => c.id), uncertain });
       }
     } catch (e) {
       // Anything unexpected (git, the modal): never leave the model stuck in 'posting'.

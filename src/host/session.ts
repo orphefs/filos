@@ -6,7 +6,7 @@ import * as vscode from 'vscode';
 import type { Anchor, FileOutline, GraphNode, ReviewGraph } from '../contract/graph';
 import { scoreGraph, type RiskScore } from '../contract/risk';
 import type { ErrorAction, GraphSource, HostToWebview, ViewState } from '../protocol';
-import type { PersistedReview } from '../review/model';
+import { mergePostedMarks, parsePersistedReview, type PersistedReview } from '../review/model';
 import type { PullRequestLookup } from './github';
 
 export interface ReviewTarget {
@@ -49,6 +49,11 @@ export class ReviewSession {
   lastRendered?: RenderedInfo;
   /** The PR diff base...head, when one was computed (agent runs); posting needs its head lines. */
   diff?: string;
+  /**
+   * Branch reviews: the commit reviewed, resolved once when the diff was computed (the diff is
+   * base...this). Comments' lines refer to it, whatever is checked out when they're posted.
+   */
+  headOid?: string;
   dependencyIndex?: string;
   /** Key of the private confidence store: "sample:@acme/ledger", the normalised origin, or the repo root. */
   repoKey: string;
@@ -87,8 +92,18 @@ export class ReviewSession {
     return this.store.get<unknown>(this.reviewKey);
   }
 
+  /** Stores the review. Posted marks already stored for the same comments are kept (they only grow). */
   saveReview(review: PersistedReview): Thenable<void> {
-    return this.store.update(this.reviewKey, review);
+    return this.store.update(this.reviewKey, mergePostedMarks(review, this.store.get<unknown>(this.reviewKey)));
+  }
+
+  /**
+   * For a review that was closed or re-run while its post ran: a newer review of this PR may own the
+   * stored state now, so only the posted marks are added to it. Stores `review` if nothing is stored.
+   */
+  savePostedMarks(review: PersistedReview): Thenable<void> {
+    const current = parsePersistedReview(this.store.get<unknown>(this.reviewKey));
+    return this.store.update(this.reviewKey, current ? mergePostedMarks(current, review) : review);
   }
 
   setLoading(message: string, detail?: string): void {

@@ -5,8 +5,8 @@ import { describe, it } from 'node:test';
 import type { ReviewGraph } from '../../src/contract/graph';
 import type { CommentSeed, Depth, Question, QuestionSet } from '../../src/contract/questions';
 import { MemoryConfidenceStore } from '../../src/review/confidence';
-import { gateQuestionId, NO_EFFECT, NOTED_PREDICTION_REPLY, parsePersistedReview, ReviewModel, type ReviewModelOptions } from '../../src/review/model';
-import type { PostTarget } from '../../src/review/types';
+import { gateQuestionId, mergePostedMarks, NO_EFFECT, NOTED_PREDICTION_REPLY, parsePersistedReview, ReviewModel, type ReviewModelOptions } from '../../src/review/model';
+import { answerFor, type PostTarget } from '../../src/review/types';
 
 const FIXTURES = resolve(__dirname, '../../fixtures');
 const graph = (): ReviewGraph => JSON.parse(readFileSync(join(FIXTURES, 'sample-graph.json'), 'utf8')) as ReviewGraph;
@@ -295,7 +295,40 @@ describe('ReviewModel', () => {
         ['c3', 'c4'],
         'accepted and amended drafts are the reviewer’s now',
       );
-      assert.equal(answerOf(model, 'j-round').attempts.length, 6);
+      // Six judgements, one kept: the current call (judgements are never graded, so no log).
+      assert.deepEqual(answerOf(model, 'j-round').attempts.map((a) => a.choiceId), ['fine']);
+    });
+
+    it('returning to a choice whose draft survived drops the abandoned choice’s draft', () => {
+      const { model } = make();
+      model.answer('j-round', 'block');
+      model.commentAction('c1', 'accept');
+      model.answer('j-round', 'ask');
+      assert.deepEqual(comments(model).map((c) => c.id), ['c1', 'c2']);
+      model.answer('j-round', 'block');
+      assert.deepEqual(
+        comments(model).map((c) => [c.id, c.origin.kind === 'question' && c.origin.choiceId, c.status]),
+        [['c1', 'block', 'accepted']],
+        'only the current call’s comment, not the abandoned “ask” draft',
+      );
+      // The same when the surviving draft was amended rather than accepted.
+      model.commentAction('c1', 'reopen');
+      model.amend('c1', 'Keep half-up, please.');
+      model.answer('j-round', 'ask');
+      model.answer('j-round', 'block');
+      assert.deepEqual(comments(model).map((c) => c.id), ['c1']);
+    });
+
+    it('keeps only the current judgement, not a log of every change', () => {
+      const { model } = make();
+      const baseline = JSON.stringify(model.persisted()).length;
+      for (let i = 0; i < 50; i++) model.answer('j-round', i % 2 ? 'fine' : 'ask');
+      assert.deepEqual(answerOf(model, 'j-round').attempts.map((a) => a.choiceId), ['fine']);
+      assert.ok(JSON.stringify(model.persisted()).length < baseline + 600, 'the stored review stays small');
+      // Older stores logged every change: only the latest tries are read back.
+      const log = Array.from({ length: 50 }, (_, i) => ({ at: `t${i}`, choiceId: i % 2 ? 'fine' : 'ask', verdict: 'noted', reply: 'r', by: 'choice' }));
+      const p = parsePersistedReview({ version: 1, answers: { 'j-round': { attempts: log, done: true } }, comments: [], explored: [], familiarity: {} })!;
+      assert.deepEqual(p.answers['j-round'].attempts.map((a) => a.at), ['t48', 't49']);
     });
 
     it('drops a rejected draft when the judgement changes', () => {
@@ -446,6 +479,21 @@ describe('ReviewModel', () => {
       assert.equal(a.attempts[0].verdict, 'noted');
       model.failEvaluation('o-noref', 'again');
       assert.equal(answerOf(model, 'o-noref').attempts.length, 1, 'stale failures are ignored');
+    });
+
+    it('puts the answer back to unanswered when its grading is cancelled, never a self-check', () => {
+      const { model } = make({ agentAvailable: true });
+      model.answer('o-total', undefined, 'per line');
+      assert.deepEqual(model.dropEvaluation('o-total'), NO_EFFECT);
+      assert.equal(answerOf(model, 'o-total'), undefined, 'no reference shown, nothing done');
+      assert.deepEqual(model.answer('o-total', undefined, 'per rate'), { kind: 'evaluate', questionId: 'o-total', attempt: 1, text: 'per rate' }, 'it can be graded again');
+      // A cancelled second try keeps the graded first one.
+      model.applyEvaluation('o-total', { verdict: 'incorrect', reply: 'Look again.' });
+      model.answer('o-total', undefined, 'per rate, really');
+      model.dropEvaluation('o-total');
+      const a = answerOf(model, 'o-total');
+      assert.deepEqual([a.attempts.length, a.attempts[0].verdict, a.done, a.pending, a.awaitingSelfCheck], [1, 'incorrect', false, undefined, undefined]);
+      assert.deepEqual(model.dropEvaluation('o-total'), NO_EFFECT, 'nothing pending: nothing to drop');
     });
 
     it('stops asking the agent once it is unavailable', () => {
@@ -700,6 +748,22 @@ describe('ReviewModel', () => {
       assert.equal(model.snapshot().mode, 'fast');
     });
 
+    it('closes the gate when a depth change leaves its explored territory’s question unlisted', () => {
+      const { model } = make({ mode: 'didactic' });
+      model.enter('api');
+      model.familiarity('api', 'known');
+      model.answer('p-api', 'b');
+      assert.deepEqual(model.snapshot().gate, { nodeId: 'api', step: 'predict', questionId: 'p-api' });
+      model.setDepth('deep');
+      assert.equal(model.snapshot().gate?.questionId, 'p-api', 'still listed at deep: the feedback stays');
+      model.setDepth('skim');
+      const s = model.snapshot();
+      assert.equal(s.gate, undefined, 'back to the map, not a gate pointing at a question that isn’t listed');
+      assert.equal(s.territories.find((t) => t.nodeId === 'api')!.explored, true);
+      model.setDepth('standard');
+      assert.equal(model.snapshot().gate, undefined);
+    });
+
     it('ignores enter for non-territories and explored territories', () => {
       const { model } = make({ mode: 'didactic' });
       model.enter('money/roundToCents');
@@ -762,6 +826,62 @@ describe('ReviewModel', () => {
         { id: 'c3', body: 'Thanks for the clear PR.', severity: 'suggestion', origin: { kind: 'note' }, status: 'draft', amended: false, thread: [] },
         { id: 'c4', body: 'Unknown node.', severity: 'suggestion', origin: { kind: 'note' }, status: 'draft', amended: false, thread: [] },
       ]);
+    });
+
+    it('a posted comment stays as posted: no undo, edit or replacement, so it is never posted twice', () => {
+      const { model } = make({ post: GITHUB, agentAvailable: true });
+      model.answer('j-round', 'block');
+      model.commentAction('c1', 'accept');
+      model.thread('c1', 'Kinder?');
+      model.applyThreadReply('c1', { reply: 'Sure.', proposal: 'Please keep half-up, if you can.' });
+      model.requestPost();
+      model.setPostState({ target: GITHUB, status: 'posting' });
+      model.setPostState({ target: GITHUB, status: 'posted' });
+      model.commentAction('c1', 'reopen');
+      model.commentAction('c1', 'reject');
+      model.amend('c1', 'Changed.');
+      model.adoptProposal('c1', 1);
+      assert.deepEqual(comments(model).map((c) => [c.id, c.status, c.body, c.posted]), [['c1', 'accepted', BLOCK.body, true]]);
+      model.answer('j-round', 'fine');
+      assert.deepEqual(comments(model).map((c) => c.id), ['c1'], 'a changed judgement never drops a posted comment');
+      model.answer('j-round', 'block');
+      assert.deepEqual(comments(model).map((c) => c.id), ['c1'], 'nor drafts it again under a new id');
+      const again = model.requestPost();
+      assert.deepEqual(again.kind === 'post' && again.comments, []);
+    });
+
+    it('never repeats a comment id, even after a corrupt stored one', () => {
+      for (const id of ['c' + '9'.repeat(400), 'c9007199254740993', 'c9007199254740992', 'c9007199254740991', 'c9007199254740990']) {
+        const { model } = make({ persisted: { version: 1, answers: {}, comments: [{ id, body: 'x', severity: 'nit', status: 'draft', origin: { kind: 'note' } }], explored: [], familiarity: {} } });
+        model.addNote('first');
+        model.addNote('second');
+        model.addNote('third');
+        const got = comments(model).map((c) => c.id);
+        assert.equal(new Set(got).size, 4, `${id.slice(0, 24)}: ${got.join(', ')}`);
+        model.commentAction(got[2], 'accept');
+        assert.deepEqual(comments(model).map((c) => c.status), ['draft', 'draft', 'accepted', 'draft'], 'an action reaches exactly its comment');
+      }
+    });
+
+    it('remembers the commit under review on each anchored comment, and flags one from an earlier commit', () => {
+      const A = 'a'.repeat(40);
+      const B = 'b'.repeat(40);
+      const { model } = make({ headOid: A });
+      model.answer('j-round', 'block');
+      model.addNote('General.');
+      assert.deepEqual(comments(model).map((c) => [c.id, c.commit, c.outdated]), [['c1', A, undefined], ['c2', undefined, undefined]]);
+      const saved = JSON.parse(JSON.stringify(model.persisted()));
+      assert.equal(saved.comments[0].commit, A);
+      // The branch moved on (a pull, a re-run): the restored comment's line is a line of A, not B.
+      const later = make({ headOid: B, persisted: saved }).model;
+      assert.deepEqual(comments(later).map((c) => [c.id, c.commit, c.outdated ?? false]), [['c1', A, true], ['c2', undefined, false]]);
+      later.addNote('On a symbol.', 'money/roundToCents');
+      assert.deepEqual([comments(later)[2].commit, comments(later)[2].outdated], [B, undefined]);
+      // Without a known commit (the sample), nothing is recorded or flagged.
+      const sample = make().model;
+      sample.answer('j-round', 'block');
+      assert.deepEqual([comments(sample)[0].commit, comments(sample)[0].outdated], [undefined, undefined]);
+      assert.equal(parsePersistedReview({ ...saved, comments: [{ ...saved.comments[0], commit: 'HEAD' }] })!.comments[0].commit, undefined, 'only a full commit id is read back');
     });
 
     it('needs the agent for threads', () => {
@@ -885,6 +1005,88 @@ describe('ReviewModel', () => {
       assert.deepEqual(third.kind === 'post' && third.comments.map((c) => c.id), ['c3']);
     });
 
+    it('freezes the comments being posted until the post ends, and marks only what was sent', () => {
+      const { model } = make({ post: GITHUB, agentAvailable: true });
+      model.addNote('First.');
+      model.addNote('Second.');
+      model.commentAction('c1', 'accept');
+      model.commentAction('c2', 'accept');
+      model.thread('c1', 'Shorter?');
+      model.applyThreadReply('c1', { reply: 'Sure.', proposal: 'Shorter.' });
+      const effect = model.requestPost();
+      assert.deepEqual(effect.kind === 'post' && effect.comments.map((c) => c.id), ['c1', 'c2']);
+      assert.deepEqual(model.postingComments(), [], 'nothing is being sent before the host says so');
+      model.setPostState({ target: GITHUB, status: 'posting' });
+      // While the host looks the PR up and the modal is open, the cards can't change what is sent.
+      model.commentAction('c2', 'reject');
+      model.commentAction('c1', 'reopen');
+      model.amend('c1', 'Toned down.');
+      model.adoptProposal('c1', 1);
+      assert.deepEqual(
+        comments(model).map((c) => [c.id, c.status, c.body]),
+        [
+          ['c1', 'accepted', 'First.'],
+          ['c2', 'accepted', 'Second.'],
+        ],
+      );
+      model.addNote('Third.');
+      model.commentAction('c3', 'accept');
+      assert.equal(comments(model)[2].status, 'accepted', 'other comments still change');
+      assert.deepEqual(model.postingComments().map((c) => [c.id, c.body]), [['c1', 'First.'], ['c2', 'Second.']], 'what is sent, read when it is sent');
+      model.setPostState({ target: GITHUB, status: 'posted' }, { sent: ['c1'] });
+      assert.deepEqual([model.isPosted('c1'), model.isPosted('c2'), model.isPosted('c3')], [true, false, false], 'only what was sent');
+      model.commentAction('c2', 'reject');
+      assert.equal(comments(model)[1].status, 'rejected', 'free again once the post ended');
+    });
+
+    it('an uncertain failure marks the comments maybe posted, across reloads, until a post succeeds', () => {
+      const { model } = make({ post: GITHUB });
+      model.addNote('A note.');
+      model.commentAction('c1', 'accept');
+      model.requestPost();
+      model.setPostState({ target: GITHUB, status: 'posting' });
+      model.setPostState({ target: GITHUB, status: 'error', error: 'The GitHub CLI didn’t answer.' }, { uncertain: true });
+      assert.deepEqual([model.mayBePosted('c1'), model.isPosted('c1')], [true, false]);
+      assert.deepEqual(model.persisted().maybePosted, ['c1']);
+      const reloaded = make({ post: GITHUB, persisted: JSON.parse(JSON.stringify(model.persisted())) }).model;
+      assert.equal(reloaded.mayBePosted('c1'), true);
+      reloaded.requestPost();
+      reloaded.setPostState({ target: GITHUB, status: 'posting' });
+      reloaded.setPostState({ target: GITHUB, status: 'posted' });
+      assert.deepEqual([reloaded.mayBePosted('c1'), reloaded.isPosted('c1'), reloaded.persisted().maybePosted], [false, true, undefined]);
+      // A plain refusal (HTTP 422) leaves nothing in doubt.
+      const refused = make({ post: GITHUB }).model;
+      refused.addNote('N.');
+      refused.commentAction('c1', 'accept');
+      refused.requestPost();
+      refused.setPostState({ target: GITHUB, status: 'posting' });
+      refused.setPostState({ target: GITHUB, status: 'error', error: 'HTTP 422' });
+      assert.equal(refused.mayBePosted('c1'), false);
+    });
+
+    it('posted marks only grow: a review writing from a stale copy keeps them, for the same comments only', () => {
+      const a = make({ post: GITHUB }).model;
+      a.addNote('Shared.');
+      a.commentAction('c1', 'accept');
+      // A second review of the PR opened before a's post landed.
+      const b = make({ post: GITHUB, persisted: JSON.parse(JSON.stringify(a.persisted())) }).model;
+      a.requestPost();
+      a.setPostState({ target: GITHUB, status: 'posting' });
+      a.setPostState({ target: GITHUB, status: 'posted' });
+      const stored = JSON.parse(JSON.stringify(a.persisted()));
+      b.addNote('Mine.');
+      assert.deepEqual(mergePostedMarks(b.persisted(), stored).posted, ['c1'], "b's save keeps a's mark");
+      assert.equal(b.persisted().posted, undefined);
+      const other = make({ post: GITHUB }).model;
+      other.addNote('Something else under the same id.');
+      assert.equal(mergePostedMarks(other.persisted(), stored).posted, undefined, 'a different comment doesn’t inherit it');
+      // Before posting, b takes the marks over: c1 isn't offered again.
+      b.adoptPostedMarks(stored);
+      assert.equal(b.isPosted('c1'), true);
+      const post = b.requestPost();
+      assert.deepEqual(post.kind === 'post' && post.comments, []);
+    });
+
     it('marks nothing posted when posting fails or is cancelled', () => {
       const { model } = make({ post: GITHUB });
       model.addNote('A note.');
@@ -949,6 +1151,57 @@ describe('ReviewModel', () => {
       assert.equal(answerOf(model, 'p-money').done, true);
       assert.equal(ids(model).filter((id) => id === 'j-round').length, 1);
       assert.ok(!ids(model).includes('gate:money'));
+    });
+
+    it('drops an answer whose question changed under the same id (a re-run), with the drafts it made', () => {
+      const { model } = make();
+      model.answer('p-money', 'a');
+      model.answer('c-multiply', 'b');
+      model.answer('j-round', 'block');
+      model.addNote('A note.');
+      const saved = JSON.parse(JSON.stringify(model.persisted()));
+      const next = questions();
+      next.questions[0] = { ...mc('p-money', 'money', 'predict', 'skim', 'c', 'Which callers?'), prompt: 'NEW: which callers are affected?' };
+      next.questions[1] = { ...next.questions[1], prompt: 'NEW: should the default change for everyone?' };
+
+      const rerun = make({ questions: next, persisted: saved }).model;
+      assert.equal(answerOf(rerun, 'p-money'), undefined, 'asked afresh, not shown as answered “correct”');
+      assert.equal(answerOf(rerun, 'j-round'), undefined);
+      assert.deepEqual(comments(rerun).map((c) => c.origin.kind), ['note'], 'the draft it made went with it');
+      assert.equal(answerOf(rerun, 'c-multiply').done, true, 'an unchanged question keeps its answer');
+      rerun.answer('p-money', 'c');
+      assert.equal(answerOf(rerun, 'p-money').attempts[0].verdict, 'correct');
+
+      // An agent review: the questions arrive after the stored answers, and the gate asks the new one.
+      const later = make({ mode: 'didactic', questions: undefined, questionsStatus: { state: 'loading' }, persisted: saved }).model;
+      later.setQuestions(next, { state: 'ready' });
+      assert.equal(answerOf(later, 'p-money'), undefined);
+      later.enter('money');
+      later.familiarity('money', 'some');
+      assert.equal(later.snapshot().gate?.questionId, 'p-money');
+      assert.equal(later.snapshot().territories.find((t) => t.nodeId === 'money')!.explored, false, 'the new prediction is asked, not skipped');
+
+      // A draft the reviewer accepted is theirs: it stays.
+      const kept = make().model;
+      kept.answer('j-round', 'block');
+      kept.commentAction('c1', 'accept');
+      const rerunKept = make({ questions: next, persisted: JSON.parse(JSON.stringify(kept.persisted())) }).model;
+      assert.deepEqual(comments(rerunKept).map((c) => [c.id, c.status]), [['c1', 'accepted']]);
+      // An answer stored without a fingerprint can't be matched to its question, so it isn't trusted.
+      const legacy = { version: 1, answers: { 'p-money': { attempts: [{ at: 't', choiceId: 'a', verdict: 'correct', reply: 'r', by: 'choice' }], done: true } }, comments: [], explored: [], familiarity: {} };
+      assert.equal(answerOf(make({ persisted: legacy }).model, 'p-money'), undefined);
+    });
+
+    it('treats question ids named like Object.prototype members as ordinary ids', () => {
+      const set = questions();
+      set.questions.push(mc('constructor', 'tax/vatRate', 'check', 'standard', 'a'), mc('toString', 'tax/vatRate', 'check', 'standard', 'b'));
+      const { model } = make({ questions: set });
+      const before = structuredClone(model.snapshot());
+      for (const id of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) assert.equal(answerFor(before.answers, id), undefined, id);
+      model.answer('constructor', 'a');
+      const after = structuredClone(model.snapshot());
+      assert.equal(answerFor(after.answers, 'constructor')?.done, true);
+      assert.equal(answerFor(after.answers, 'toString'), undefined);
     });
 
     it('drops questions about nodes the graph does not have', () => {

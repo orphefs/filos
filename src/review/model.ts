@@ -26,6 +26,8 @@ export interface PersistedReview {
   familiarity: Record<string, Familiarity>;
   /** Ids of comments already posted to the PR, so a later post doesn't repeat them. */
   posted?: string[];
+  /** Ids of comments whose post ended without a clear answer (a timeout, a 5xx): GitHub may have them. */
+  maybePosted?: string[];
 }
 
 export interface ReviewModelOptions {
@@ -39,6 +41,8 @@ export interface ReviewModelOptions {
   /** Open answers are graded and threads answered by the agent; otherwise self-checks. */
   agentAvailable: boolean;
   post: PostTarget;
+  /** The commit under review (full id), when known: new comments' lines refer to it. */
+  headOid?: string;
   /** ISO timestamp; injected so tests are deterministic. */
   now: () => string;
 }
@@ -53,8 +57,9 @@ export type ReviewEffect =
   /** Run the agent's `draftComments` task, then call applyAgentDrafts or failDrafting. */
   | { kind: 'draft' }
   /**
-   * Confirm with the reviewer, post buildGithubReview(comments, …), and report via setPostState
-   * ('posted' marks exactly these comments as posted). `comments` may be empty: say there's nothing to post.
+   * Confirm with the reviewer, post buildGithubReview(postingComments(), …), and report via
+   * setPostState with the ids sent ('posted' marks exactly those). While it runs, those comments
+   * can't change. `comments` (as they were when Post was clicked) may be empty: say there's nothing to post.
    */
   | { kind: 'post'; comments: DraftComment[] }
   /** Export reviewToMarkdown(...) to the clipboard and an untitled document. */
@@ -101,12 +106,69 @@ const SEVERITIES: readonly CommentSeverity[] = ['blocking', 'suggestion', 'quest
 const VERDICTS: readonly Verdict[] = ['correct', 'partly', 'incorrect', 'noted'];
 const STATUSES: readonly CommentStatus[] = ['draft', 'accepted', 'rejected'];
 const DEFAULT_DEPTH: Depth = 'standard';
+/** No question takes more than two tries (a hint, then the answer); judgements keep only the latest. */
+const MAX_ATTEMPTS = 2;
+const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 /** Sets an own property, so ids from agent output like "__proto__" stay ordinary keys. */
 function put<T>(obj: Record<string, T>, key: string, value: T): void {
   Object.defineProperty(obj, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
+/** A short, stable hash of a string (cyrb53): enough to tell two versions of a question apart. */
+function hash(text: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+/**
+ * What an answer was an answer to: the question's node, kind, prompt, reference and choices. A
+ * re-run's question set may reuse an id ("q-money-predict") for a different question; an answer
+ * stored under that id is dropped rather than shown as the answer to the new one.
+ */
+export function questionKey(q: Question): string {
+  const choices = (q.choices ?? []).map((c) => [c.id, c.text, c.correct === true]);
+  return hash(JSON.stringify([q.nodeId, q.stage, q.purpose, q.prompt, q.reference ?? '', choices]));
+}
+
+/** Same text at the same place: a posted mark stored by another review of the PR applies to it. */
+function sameComment(a: Pick<DraftComment, 'body' | 'file' | 'line'>, b: Pick<DraftComment, 'body' | 'file' | 'line'>): boolean {
+  return a.body === b.body && a.file === b.file && a.line === b.line;
+}
+
+/**
+ * `next` with the posted and maybe-posted marks of `stored` (another PersistedReview, or anything)
+ * added, for comments that are the same comment in both. Marks only ever grow, so a review writing
+ * from a stale copy can't make a posted comment postable again.
+ */
+export function mergePostedMarks(next: PersistedReview, stored: unknown): PersistedReview {
+  const old = parsePersistedReview(stored);
+  if (!old) return next;
+  const mine = new Map(next.comments.map((c) => [c.id, c]));
+  const theirs = new Map(old.comments.map((c) => [c.id, c]));
+  const same = (id: string) => {
+    const a = mine.get(id);
+    const b = theirs.get(id);
+    return !!a && !!b && sameComment(a, b);
+  };
+  const posted = new Set([...(next.posted ?? []), ...(old.posted ?? []).filter(same)]);
+  const maybe = new Set([...(next.maybePosted ?? []), ...(old.maybePosted ?? []).filter(same)].filter((id) => !posted.has(id)));
+  const out: PersistedReview = { ...next };
+  delete out.posted;
+  delete out.maybePosted;
+  if (posted.size) out.posted = next.comments.filter((c) => posted.has(c.id)).map((c) => c.id);
+  if (maybe.size) out.maybePosted = next.comments.filter((c) => maybe.has(c.id)).map((c) => c.id);
+  return out;
 }
 
 export class ReviewModel {
@@ -129,9 +191,12 @@ export class ReviewModel {
   private draftingPending = false;
   private postState: PostState;
   private posted = new Set<string>();
+  /** Comments a post may have delivered before it failed without a clear answer (a timeout, a 5xx). */
+  private maybePosted = new Set<string>();
   /** Comment ids handed to the host by the last post effect. */
   private postingIds?: string[];
   private nextComment = 1;
+  private readonly headOid?: string;
 
   constructor(opts: ReviewModelOptions) {
     this.index = new GraphIndex(opts.graph);
@@ -141,9 +206,11 @@ export class ReviewModel {
     this.currentMode = opts.mode === 'didactic' ? 'didactic' : 'fast';
     this.agent = opts.agentAvailable;
     this.postState = { target: clone(opts.post), status: 'idle' };
+    if (typeof opts.headOid === 'string' && OID.test(opts.headOid)) this.headOid = opts.headOid;
     this.useQuestions(opts.questions);
     const saved = parsePersistedReview(opts.persisted);
     if (saved) this.restore(saved);
+    this.dropStaleAnswers();
   }
 
   // ---- reading ---------------------------------------------------------------------------------
@@ -203,6 +270,20 @@ export class ReviewModel {
     return this.posted.has(commentId);
   }
 
+  /** An earlier post that may have delivered this comment ended without a clear answer. */
+  mayBePosted(commentId: string): boolean {
+    return this.maybePosted.has(commentId);
+  }
+
+  /**
+   * What the running post sends, read when it is sent: the last post effect's comments that are
+   * still accepted, with a body, and not posted meanwhile (by another review of this PR, say).
+   */
+  postingComments(): DraftComment[] {
+    const ids = new Set(this.postState.status === 'posting' ? (this.postingIds ?? []) : []);
+    return clone(this.comments.filter((c) => ids.has(c.id) && c.status === 'accepted' && c.body.trim() && !this.posted.has(c.id)));
+  }
+
   snapshot(): ReviewSnapshot {
     const questions = this.orderedQuestions();
     const territories = this.index.territories.map((t) => {
@@ -230,7 +311,12 @@ export class ReviewModel {
       questions,
       answers: Object.fromEntries(this.answers),
       // The webview greys out what was posted; the ids themselves are persisted, not the flag.
-      comments: this.comments.map((c) => (this.posted.has(c.id) ? { ...c, posted: true } : c)),
+      comments: this.comments.map((c) => {
+        const out: DraftComment = { ...c };
+        if (this.posted.has(c.id)) out.posted = true;
+        if (this.isOutdated(c)) out.outdated = true;
+        return out;
+      }),
       territories,
       coverage: { explored: territories.filter((t) => t.explored).length, total: territories.length },
       questionsStatus: this.status,
@@ -273,6 +359,8 @@ export class ReviewModel {
     if (this.chosenDepth) out.chosenDepth = this.chosenDepth;
     const posted = this.comments.filter((c) => this.posted.has(c.id)).map((c) => c.id);
     if (posted.length) out.posted = posted;
+    const maybe = this.comments.filter((c) => this.maybePosted.has(c.id)).map((c) => c.id);
+    if (maybe.length) out.maybePosted = maybe;
     return out;
   }
 
@@ -327,6 +415,7 @@ export class ReviewModel {
     if (!isDepth(depth)) return NO_EFFECT;
     this.chosenDepth = depth;
     this.refreshExplored();
+    this.settleGate();
     return NO_EFFECT;
   }
 
@@ -366,6 +455,7 @@ export class ReviewModel {
     // Judgements can be changed (the draft follows); graded answers and predictions can't.
     if (prior?.done && (q.purpose !== 'judge' || isGateQuestionId(q.id))) return NO_EFFECT;
     const state: AnswerState = prior ?? { questionId: q.id, attempts: [], done: false };
+    state.questionKey = questionKey(q);
     const atGate = this.gate?.step === 'predict' && this.gateQuestionOf(this.gate.nodeId) === q.id ? this.gate.nodeId : undefined;
     const at = this.now();
     let effect: ReviewEffect = NO_EFFECT;
@@ -375,7 +465,8 @@ export class ReviewModel {
       if (!choice) return NO_EFFECT;
       if (q.purpose === 'judge') {
         if (state.attempts[state.attempts.length - 1]?.choiceId === choice.id) return NO_EFFECT;
-        state.attempts.push({ at, choiceId: choice.id, verdict: 'noted', reply: choice.explain, by: 'choice' });
+        // A judgement is never graded: only the current call is kept, not a log of earlier ones.
+        state.attempts = [{ at, choiceId: choice.id, verdict: 'noted', reply: choice.explain, by: 'choice' }];
         state.done = true;
         this.draftFromQuestion(q, choice.id, choice.comment);
       } else if (choice.correct) {
@@ -394,7 +485,7 @@ export class ReviewModel {
       const answer = typeof text === 'string' ? text.trim() : '';
       if (!answer) return NO_EFFECT;
       if (q.purpose === 'judge') {
-        state.attempts.push({ at, text: answer, verdict: 'noted', reply: isGateQuestionId(q.id) ? NOTED_PREDICTION_REPLY : '', by: 'self' });
+        state.attempts = [{ at, text: answer, verdict: 'noted', reply: isGateQuestionId(q.id) ? NOTED_PREDICTION_REPLY : '', by: 'self' }];
         state.done = true;
       } else if (this.agent) {
         // Placeholder until the agent's verdict arrives (pending marks it as ungraded).
@@ -435,14 +526,14 @@ export class ReviewModel {
   commentAction(id: string, action: 'accept' | 'reject' | 'reopen'): ReviewEffect {
     const c = this.comments.find((x) => x.id === id);
     const status: CommentStatus | undefined = action === 'accept' ? 'accepted' : action === 'reject' ? 'rejected' : action === 'reopen' ? 'draft' : undefined;
-    if (c && status) c.status = status;
+    if (c && status && !this.isLocked(c.id)) c.status = status;
     return NO_EFFECT;
   }
 
   amend(id: string, body: string): ReviewEffect {
     const c = this.comments.find((x) => x.id === id);
     const text = typeof body === 'string' ? body.trim() : '';
-    if (!c || !text) return NO_EFFECT;
+    if (!c || !text || this.isLocked(c.id)) return NO_EFFECT;
     if (text !== c.body) {
       c.body = text;
       c.amended = true;
@@ -464,7 +555,7 @@ export class ReviewModel {
     const c = this.comments.find((x) => x.id === id);
     const msg = c && Number.isInteger(index) ? c.thread[index] : undefined;
     const proposal = msg?.role === 'agent' ? msg.proposal?.trim() : undefined;
-    if (!c || !proposal) return NO_EFFECT;
+    if (!c || !proposal || this.isLocked(c.id)) return NO_EFFECT;
     if (proposal !== c.body) {
       c.body = proposal;
       c.amended = true;
@@ -563,6 +654,20 @@ export class ReviewModel {
     return NO_EFFECT;
   }
 
+  /**
+   * The grading was cancelled (the review was closed or re-run): the answer goes back to
+   * unanswered, so it can be graded later. Never a self-check, which would show the reference.
+   */
+  dropEvaluation(questionId: string): ReviewEffect {
+    const state = this.answers.get(questionId);
+    if (!state?.pending) return NO_EFFECT;
+    state.attempts.pop();
+    delete state.pending;
+    if (!state.attempts.length) this.answers.delete(questionId);
+    this.refreshExplored();
+    return NO_EFFECT;
+  }
+
   applyThreadReply(commentId: string, reply: ThreadReply): ReviewEffect {
     const c = this.comments.find((x) => x.id === commentId);
     if (!c?.threadPending) return NO_EFFECT;
@@ -602,20 +707,59 @@ export class ReviewModel {
     return NO_EFFECT;
   }
 
-  /** The agent's questions pass finished (or failed, or restarted). Answers are kept by question id. */
+  /**
+   * The agent's questions pass finished (or failed, or restarted). Answers are kept by question id,
+   * as long as the question with that id is still the one they answered.
+   */
   setQuestions(questions: QuestionSet | undefined, status: QuestionsStatus): ReviewEffect {
     this.useQuestions(questions);
     this.status = clone(status);
+    this.dropStaleAnswers();
     this.refreshExplored();
+    this.settleGate();
     return NO_EFFECT;
   }
 
-  /** The host's progress posting. 'posted' marks the comments of the last post effect as posted. */
-  setPostState(state: PostState): ReviewEffect {
+  /**
+   * The host's progress posting. 'posted' marks the comments of the last post effect as posted:
+   * those in `sent` when given (what actually went to GitHub). An 'error' that is `uncertain` (the
+   * request may have reached GitHub) marks them as maybe posted, so the next post warns.
+   */
+  setPostState(state: PostState, outcome: { sent?: readonly string[]; uncertain?: boolean } = {}): ReviewEffect {
     const next = clone(state);
-    if (next.status === 'posted') for (const id of this.postingIds ?? []) this.posted.add(id);
+    const sent = outcome.sent ? new Set(outcome.sent) : undefined;
+    const ids = (this.postingIds ?? []).filter((id) => !sent || sent.has(id));
+    if (next.status === 'posted') {
+      for (const id of ids) {
+        this.posted.add(id);
+        this.maybePosted.delete(id);
+      }
+    }
+    if (next.status === 'error' && outcome.uncertain === true) for (const id of ids) this.maybePosted.add(id);
     if (next.status !== 'posting') this.postingIds = undefined;
     this.postState = next;
+    return NO_EFFECT;
+  }
+
+  /**
+   * Posted marks another review of this PR stored meanwhile (an earlier panel whose post finished
+   * late): they apply to the comments here that are the same comment.
+   */
+  adoptPostedMarks(stored: unknown): ReviewEffect {
+    const saved = parsePersistedReview(stored);
+    if (!saved) return NO_EFFECT;
+    const theirs = new Map(saved.comments.map((c) => [c.id, c]));
+    const same = (id: string) => {
+      const a = this.comments.find((c) => c.id === id);
+      const b = theirs.get(id);
+      return !!a && !!b && sameComment(a, b);
+    };
+    for (const id of saved.posted ?? []) {
+      if (!same(id)) continue;
+      this.posted.add(id);
+      this.maybePosted.delete(id);
+    }
+    for (const id of saved.maybePosted ?? []) if (same(id) && !this.posted.has(id)) this.maybePosted.add(id);
     return NO_EFFECT;
   }
 
@@ -626,6 +770,46 @@ export class ReviewModel {
   }
 
   // ---- internals -------------------------------------------------------------------------------
+
+  /** Posted comments are on GitHub, and those being posted are what the confirmation shows: neither changes. */
+  private isLocked(id: string): boolean {
+    return this.posted.has(id) || (this.postState.status === 'posting' && !!this.postingIds?.includes(id));
+  }
+
+  /** A comment on a line of an earlier commit than the one under review (or of one not recorded). */
+  private isOutdated(c: DraftComment): boolean {
+    return c.file !== undefined && this.headOid !== undefined && c.commit !== this.headOid;
+  }
+
+  /** Re-answering may drop this draft: the reviewer hasn't accepted, edited or (maybe) posted it. */
+  private isReplaceable(c: DraftComment): boolean {
+    return c.status !== 'accepted' && !c.amended && !this.posted.has(c.id) && !this.maybePosted.has(c.id);
+  }
+
+  /**
+   * Answers to a question that has since changed under the same id (a re-run's new set) are dropped,
+   * with the drafts they made that are still only drafts. Answers to ids the set doesn't have are kept.
+   */
+  private dropStaleAnswers(): void {
+    for (const [id, a] of [...this.answers]) {
+      const q = isGateQuestionId(id) ? this.syntheticGate(id.slice(GATE_QUESTION_PREFIX.length)) : this.questionsById.get(id);
+      if (!q || a.questionKey === questionKey(q)) continue;
+      this.answers.delete(id);
+      for (const [t, qid] of [...this.gateAnswers]) if (qid === id) this.gateAnswers.delete(t);
+      this.comments = this.comments.filter((c) => !(c.origin.kind === 'question' && c.origin.questionId === id && this.isReplaceable(c)));
+    }
+  }
+
+  /**
+   * After the depth or the questions change: a gate left open on a territory just explored has
+   * nothing to show if its question is no longer listed, so it closes (back to the map).
+   */
+  private settleGate(): void {
+    const g = this.gate;
+    if (!g || g.step !== 'predict' || !this.explored.has(g.nodeId)) return;
+    const sticky = this.gateAnswers.get(g.nodeId);
+    if (!sticky || !this.orderedQuestions().some((q) => q.id === sticky)) this.gate = undefined;
+  }
 
   private useQuestions(set: QuestionSet | undefined): void {
     this.questionSet = set && clone(set);
@@ -726,25 +910,38 @@ export class ReviewModel {
 
   /**
    * A judge choice (or an evaluation) drafts a comment. Re-answering replaces the question's earlier
-   * draft, except one the reviewer accepted or amended; picking a choice whose draft survives keeps it.
+   * drafts, except those the reviewer accepted, amended or posted; picking a choice whose draft
+   * survives keeps that draft (and still drops the other choices' replaceable drafts).
    */
   private draftFromQuestion(q: Question, choiceId: string | undefined, rawSeed: CommentSeed | undefined): void {
     const fromChoice = choiceId !== undefined;
     const earlier = this.comments.filter((c) => c.origin.kind === 'question' && c.origin.questionId === q.id && (c.origin.choiceId !== undefined) === fromChoice);
-    if (fromChoice && earlier.some((c) => c.origin.kind === 'question' && c.origin.choiceId === choiceId)) return;
-    const replaced = new Set(earlier.filter((c) => c.status !== 'accepted' && !c.amended));
+    const sameChoice = (c: DraftComment) => fromChoice && c.origin.kind === 'question' && c.origin.choiceId === choiceId;
+    const replaced = new Set(earlier.filter((c) => !sameChoice(c) && this.isReplaceable(c)));
     this.comments = this.comments.filter((c) => !replaced.has(c));
+    if (earlier.some(sameChoice)) return;
     const seed = rawSeed && cleanSeed(rawSeed);
     if (!seed) return;
     this.addComment({ nodeId: q.nodeId, ...seed, origin: { kind: 'question', questionId: q.id, ...(fromChoice ? { choiceId } : {}) } });
   }
 
   private addComment(c: Pick<DraftComment, 'nodeId' | 'file' | 'line' | 'body' | 'severity' | 'origin'>): void {
-    const comment: DraftComment = { id: `c${this.nextComment++}`, ...c, status: 'draft', amended: false, thread: [] };
+    const comment: DraftComment = { id: this.freshCommentId(), ...c, status: 'draft', amended: false, thread: [] };
     if (comment.nodeId === undefined) delete comment.nodeId;
     if (comment.file === undefined) delete comment.file;
     if (comment.line === undefined) delete comment.line;
+    // Its line is a line of the commit under review, whatever is checked out when it's posted.
+    if (comment.file !== undefined && this.headOid) comment.commit = this.headOid;
     this.comments.push(comment);
+  }
+
+  /** The next unused "c<n>". Ids are never repeated, even after a stored id near the end of the safe integers. */
+  private freshCommentId(): string {
+    for (;;) {
+      if (!Number.isSafeInteger(this.nextComment + 1)) this.nextComment = 1;
+      const id = `c${this.nextComment++}`;
+      if (!this.comments.some((x) => x.id === id)) return id;
+    }
   }
 
   private restore(saved: PersistedReview): void {
@@ -755,9 +952,12 @@ export class ReviewModel {
     for (const [id, f] of Object.entries(saved.familiarity)) if (this.index.isTerritory(id)) this.familiarityOf.set(id, f);
     const ids = new Set(this.comments.map((c) => c.id));
     for (const id of saved.posted ?? []) if (ids.has(id)) this.posted.add(id);
+    for (const id of saved.maybePosted ?? []) if (ids.has(id) && !this.posted.has(id)) this.maybePosted.add(id);
     for (const c of this.comments) {
       const n = /^c(\d+)$/.exec(c.id);
-      if (n) this.nextComment = Math.max(this.nextComment, Number(n[1]) + 1);
+      // A corrupt id ("c" and 400 digits) must not push the counter past where ++ still counts.
+      const next = n ? Number(n[1]) + 1 : NaN;
+      if (Number.isSafeInteger(next)) this.nextComment = Math.max(this.nextComment, next);
     }
   }
 }
@@ -810,6 +1010,9 @@ function parseAnswer(id: string, v: unknown): AnswerState | undefined {
   } else if (v.awaitingSelfCheck === true && !a.done) {
     a.awaitingSelfCheck = true;
   }
+  // Older stores logged every change of a judgement; only the latest tries matter.
+  if (a.attempts.length > MAX_ATTEMPTS) a.attempts = a.attempts.slice(-MAX_ATTEMPTS);
+  if (str(v.questionKey)) a.questionKey = v.questionKey;
   return a;
 }
 
@@ -829,6 +1032,7 @@ function parseComment(v: unknown): DraftComment | undefined {
   if (str(v.nodeId)) c.nodeId = v.nodeId;
   if (str(v.file)) c.file = v.file;
   if (typeof v.line === 'number' && Number.isInteger(v.line) && v.line >= 1) c.line = v.line;
+  if (str(v.commit) && OID.test(v.commit)) c.commit = v.commit;
   return c;
 }
 
@@ -860,5 +1064,7 @@ export function parsePersistedReview(raw: unknown): PersistedReview | undefined 
   if (isDepth(raw.chosenDepth)) out.chosenDepth = raw.chosenDepth;
   const posted = Array.isArray(raw.posted) ? [...new Set(raw.posted.filter((id): id is string => str(id) && ids.has(id)))] : [];
   if (posted.length) out.posted = posted;
+  const maybe = Array.isArray(raw.maybePosted) ? [...new Set(raw.maybePosted.filter((id): id is string => str(id) && ids.has(id) && !posted.includes(id)))] : [];
+  if (maybe.length) out.maybePosted = maybe;
   return out;
 }

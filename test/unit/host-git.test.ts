@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import * as git from '../../src/host/git';
+import { diffHeadLines } from '../../src/review/github';
 
 const scratch = mkdtempSync(join(tmpdir(), 'filos-git-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -83,6 +84,29 @@ describe('git.diff on a real repo', () => {
     assert.match(d, /\+export const ok = \(u\) => true;/);
     assert.ok(!/Binary files/.test(d));
     assert.deepEqual(git.diffWarnings(d).length, 1, 'still warns that .gitattributes changed');
+  });
+
+  it("shapes hunks as GitHub does, whatever the user's diff settings", async () => {
+    const r = join(scratch, 'context-repo');
+    mkdirSync(r);
+    sh(r, 'init', '--quiet');
+    sh(r, 'symbolic-ref', 'HEAD', 'refs/heads/main');
+    const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+    writeFileSync(join(r, 'f.txt'), lines.join('\n') + '\n');
+    sh(r, 'add', '-A');
+    sh(r, 'commit', '--quiet', '-m', 'base');
+    sh(r, 'checkout', '--quiet', '-b', 'pr');
+    // Two changes 10 lines apart: separate hunks at GitHub's 3 lines of context, one hunk (and
+    // lines 24-26 commentable) with the user's interHunkContext; 10 lines of context would widen both.
+    writeFileSync(join(r, 'f.txt'), lines.map((l, i) => (i === 19 || i === 29 ? `${l} changed` : l)).join('\n') + '\n');
+    sh(r, 'commit', '--quiet', '-am', 'pr');
+    const config = join(scratch, 'wide.gitconfig');
+    writeFileSync(config, '[diff]\n\tcontext = 10\n\tinterHunkContext = 10\n\talgorithm = histogram\n');
+    const d = await git.diff(r, 'main', 'pr', { env: { GIT_CONFIG_GLOBAL: config, GIT_CONFIG_NOSYSTEM: '1' } });
+    const hunks = d.split('\n').filter((l) => l.startsWith('@@')).map((l) => l.replace(/ @@.*$/, ' @@'));
+    assert.deepEqual(hunks, ['@@ -17,7 +17,7 @@', '@@ -27,7 +27,7 @@']);
+    const head = [...(diffHeadLines(d).get('f.txt') ?? [])];
+    assert.deepEqual(head, [17, 18, 19, 20, 21, 22, 23, 27, 28, 29, 30, 31, 32, 33], 'only lines GitHub shows are commentable');
   });
 
   it('turns a diff over the buffer limit into a clear error', async () => {

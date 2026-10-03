@@ -31,6 +31,19 @@ export interface AnswerState {
   pending?: boolean;
   /** Open answer waiting for the reviewer's self-check against the reference (no agent). */
   awaitingSelfCheck?: boolean;
+  /**
+   * Fingerprint of the question as it was answered (questionKey in model.ts). A re-run may reuse
+   * the id for a different question; the answer doesn't carry over to it.
+   */
+  questionKey?: string;
+}
+
+/**
+ * The answer to a question in a snapshot, or undefined. Question ids come from agent output, so only
+ * own keys count: "constructor" or "toString" must not find Object.prototype's members.
+ */
+export function answerFor(answers: Readonly<Record<string, AnswerState>>, questionId: string): AnswerState | undefined {
+  return Object.prototype.hasOwnProperty.call(answers, questionId) ? answers[questionId] : undefined;
 }
 
 export interface ThreadMessage {
@@ -58,8 +71,15 @@ export interface DraftComment {
   thread: ThreadMessage[];
   /** The agent is replying in the thread. */
   threadPending?: boolean;
+  /**
+   * The commit (full id) whose head revision `file` and `line` refer to: the one under review when
+   * the comment was drafted. Only a comment on the commit GitHub has as the PR's head goes inline.
+   */
+  commit?: string;
   /** Already posted to the PR: a later post leaves it out. Set in snapshots only. */
   posted?: boolean;
+  /** Its line refers to an earlier commit than the one under review, so it can't sit inline. Set in snapshots only. */
+  outdated?: boolean;
 }
 
 /** A top-level module of the graph: a territory on the didactic map. */

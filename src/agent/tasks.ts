@@ -11,6 +11,7 @@ import type { AgentProvider, AskResult } from './provider';
 import { repoReader } from './repoFiles';
 import { toCliSchema } from './schema';
 import {
+  cleanText,
   DRAFT_COMMENTS_SCHEMA,
   EVALUATE_SCHEMA,
   THREAD_REPLY_SCHEMA,
@@ -142,16 +143,18 @@ export async function threadReply(p: AgentProvider, a: ThreadReplyInput): Promis
 
 /**
  * validateQuestionSet in repair mode, plus what only the agent path needs: absolute comment paths
- * (the Read tool works with them) made repo-relative first, the question cap, and a warning for a
- * changed module without a gate question (the host then asks its generic one).
+ * (the Read tool works with them) made repo-relative first, display text cleaned like every other
+ * task's (it is shown to the reviewer, and a judge choice's comment may be posted), the question
+ * cap, and a warning for a changed module without a gate question (the host then asks its generic one).
  */
 export function checkQuestions(raw: unknown, graph: ReviewGraph, seeds: SeedContext): Validated<QuestionSet> {
   const warnings: string[] = [];
   const input = rebaseCommentPaths(raw, seeds.repoRoot, warnings);
   const v = validateQuestionSet(input, graph, { readFile: seeds.readFile, repair: true });
   if (!v.ok) return { ok: false, errors: v.errors };
-  const set = v.value;
+  const set = cleanQuestionText(v.value, warnings);
   warnings.push(...v.warnings);
+  if (!set.questions.length) return { ok: false, errors: ['cleaning the text left no question to ask'] };
 
   if (set.questions.length > MAX_QUESTIONS) {
     // Keep every gate (predict) question, then the rest in the agent's order.
@@ -165,6 +168,39 @@ export function checkQuestions(raw: unknown, graph: ReviewGraph, seeds: SeedCont
     if (!set.questions.some((q) => q.nodeId === m.id && q.stage === 'predict')) warnings.push(`changed module "${m.id}" has no predict question`);
   }
   return { ok: true, value: set, warnings };
+}
+
+/**
+ * cleanText over every string the reviewer reads or GitHub may receive: control characters and
+ * bidirectional overrides make text read differently from what it is. A question left without a
+ * prompt or a choice's text is dropped; an optional field left empty goes, and so does a comment
+ * seed left without a body.
+ */
+function cleanQuestionText(set: QuestionSet, warnings: string[]): QuestionSet {
+  set.depth.why = cleanText(set.depth.why);
+  set.questions = set.questions.filter((q) => {
+    q.prompt = cleanText(q.prompt);
+    for (const field of ['reference', 'hint'] as const) {
+      if (q[field] === undefined) continue;
+      const text = cleanText(q[field]);
+      if (text) q[field] = text;
+      else delete q[field];
+    }
+    for (const c of q.choices ?? []) {
+      c.text = cleanText(c.text);
+      c.explain = cleanText(c.explain);
+      if (!c.comment) continue;
+      c.comment.body = cleanText(c.comment.body);
+      if (!c.comment.body) {
+        warnings.push(`repaired: dropped the comment of question "${q.id}" choice "${c.id}", which has no text once cleaned`);
+        delete c.comment;
+      }
+    }
+    if (q.prompt && (q.choices ?? []).every((c) => c.text)) return true;
+    warnings.push(`repaired: dropped question "${q.id}", which has an empty prompt or choice once cleaned`);
+    return false;
+  });
+  return set;
 }
 
 /** Copies the raw set with absolute comment paths under the repo made repo-relative. */

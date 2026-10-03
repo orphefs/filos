@@ -95,8 +95,11 @@ if (cmd === 'pr' && sub === 'view') {
   if (mode === 'auth') notLoggedIn();
   if (mode === 'nopr') fail(1, `no pull requests found for branch "${branch()}"`);
   if (mode === 'noremote') fail(1, 'none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use `gh auth login`');
-  const url = env.FAKE_GH_PR_URL || `https://${host}/${repo}/pull/${number}`;
-  out(pick({ number, url, headRefOid: headOid(), baseRefName: env.FAKE_GH_BASE || 'main', state: 'OPEN', title: 'Fake pull request' }));
+  // `gh pr view <url>` answers for that PR (as gh does), whatever branch is checked out.
+  const selected = argv[2] && !argv[2].startsWith('-') ? /^https:\/\/[^/]+\/[^/]+\/[^/]+\/pull\/(\d+)$/.exec(argv[2]) : null;
+  const n = selected ? Number(selected[1]) : number;
+  const url = selected ? argv[2] : env.FAKE_GH_PR_URL || `https://${host}/${repo}/pull/${n}`;
+  out(pick({ number: n, url, headRefOid: headOid(), baseRefName: env.FAKE_GH_BASE || 'main', state: env.FAKE_GH_STATE || 'OPEN', headRefName: env.FAKE_GH_HEAD_REF || branch(), title: 'Fake pull request' }));
   process.exit(0);
 }
 
@@ -111,6 +114,9 @@ if (cmd === 'api') {
   const input = argv.includes('--input') && argv[argv.indexOf('--input') + 1] === '-' ? fs.readFileSync(0, 'utf8') : undefined;
   record({ stdin: input });
   if (mode === 'auth') notLoggedIn();
+  if (mode === 'api502') fail(1, 'gh: Bad Gateway (HTTP 502)', JSON.stringify({ message: 'Server Error' }));
+  // The request was read (as if GitHub had it) before the answer stalls: gh is killed at the timeout.
+  if (mode === 'apislow') sleep(Number(env.FAKE_GH_DELAY_MS || 60000));
   if (mode === 'apierror') {
     fail(
       1,

@@ -4,7 +4,7 @@
 // Finished cards fold to one line; the one just answered stays open so its feedback can be read.
 
 import type { Choice, Question } from '../contract/questions';
-import type { AnswerState, Attempt } from '../review/types';
+import { answerFor, type AnswerState, type Attempt } from '../review/types';
 import { h } from './dom';
 import { fogIcon } from './render';
 import { answerable, commentFromQuestion, costNote, nodeLabel, nodeName, paneButton, spinnerLine, uid, type PaneContext } from './paneContext';
@@ -45,7 +45,7 @@ export interface CardOptions {
 }
 
 export function questionCard(q: Question, ctx: PaneContext, opts: CardOptions = {}): HTMLElement {
-  const a = ctx.review.answers[q.id];
+  const a = answerFor(ctx.review.answers, q.id);
   const state = stateOf(a);
   const promptId = uid('qp');
   const card = h('article', {
@@ -217,7 +217,7 @@ function openArea(q: Question, a: AnswerState | undefined, ctx: PaneContext, can
       return;
     }
     const before = attempts.length;
-    ctx.drafts.clearOnceArrived(key, (review) => (review.answers[q.id]?.attempts.length ?? 0) > before);
+    ctx.drafts.clearOnceArrived(key, (review) => (answerFor(review.answers, q.id)?.attempts.length ?? 0) > before);
     ctx.ui.openCards.add(q.id);
     ctx.act({ type: 'answer', questionId: q.id, text }, ['gate:continue', `q:${q.id}:feedback`]);
   }, { class: 'primary', 'aria-describedby': agentGrades ? noteId : undefined });
@@ -278,7 +278,7 @@ export function questionsPanel(ctx: PaneContext): Node[] {
   const { review } = ctx;
   const out: Node[] = [];
   const all = review.questions;
-  const done = all.filter((q) => review.answers[q.id]?.done).length;
+  const done = all.filter((q) => answerFor(review.answers, q.id)?.done).length;
 
   out.push(
     h(
@@ -328,7 +328,7 @@ export function questionsPanel(ctx: PaneContext): Node[] {
   }
   const filtered = !!selNode && !ctx.ui.showAll;
   for (const [g, qs] of groups) {
-    const doneHere = qs.filter((q) => review.answers[q.id]?.done).length;
+    const doneHere = qs.filter((q) => answerFor(review.answers, q.id)?.done).length;
     const fogged = ctx.fog.fogged.has(g);
     const headId = uid('qg');
     const sec = h('section', { class: `qgroup${fogged ? ' is-fogged' : ''}`, 'aria-labelledby': headId, 'data-group': g });

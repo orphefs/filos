@@ -137,14 +137,17 @@ export interface GithubReview {
   comments: GithubReviewComment[];
 }
 
-/** Accepted comments only. Inline when `file:line` is a head line of the diff, else in the body. */
-export function buildGithubReview(comments: readonly DraftComment[], headLines: ReadonlyMap<string, ReadonlySet<number>>): GithubReview {
+/**
+ * Accepted comments only. Inline when `file:line` is a head line of the diff (and `mayInline` allows
+ * it, e.g. the comment's line refers to the diff's own commit), else in the body.
+ */
+export function buildGithubReview(comments: readonly DraftComment[], headLines: ReadonlyMap<string, ReadonlySet<number>>, mayInline: (c: DraftComment) => boolean = () => true): GithubReview {
   const inline: GithubReviewComment[] = [];
   const general: string[] = [];
   for (const c of comments) {
     if (c.status !== 'accepted' || !c.body.trim()) continue;
     const text = commentText(c);
-    if (c.file && c.line && Number.isInteger(c.line) && headLines.get(c.file)?.has(c.line)) {
+    if (c.file && c.line && Number.isInteger(c.line) && headLines.get(c.file)?.has(c.line) && mayInline(c)) {
       inline.push({ path: c.file, line: c.line, side: 'RIGHT', body: text });
     } else {
       const where = locationSpan(c);

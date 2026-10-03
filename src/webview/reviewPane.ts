@@ -4,7 +4,7 @@
 
 import type { ReviewAction } from '../protocol';
 import type { GraphIndex } from '../review/order';
-import type { Familiarity, ReviewSnapshot } from '../review/types';
+import { answerFor, type Familiarity, type ReviewSnapshot } from '../review/types';
 import { commentsPanel } from './comments';
 import { h } from './dom';
 import { captureFocus, Drafts, restoreFocus } from './drafts';
@@ -195,7 +195,7 @@ export class ReviewPane {
 
   private renderTabs(review: ReviewSnapshot): void {
     const qs = review.questions;
-    const done = qs.filter((q) => review.answers[q.id]?.done).length;
+    const done = qs.filter((q) => answerFor(review.answers, q.id)?.done).length;
     const toDecide = review.comments.filter((c) => c.status === 'draft').length;
     const accepted = review.comments.filter((c) => c.status === 'accepted').length;
     const loading = review.questionsStatus.state === 'loading';
@@ -308,10 +308,13 @@ export class ReviewPane {
   private announceChanges(prev: ReviewSnapshot, next: ReviewSnapshot): void {
     const said: string[] = [];
     for (const [id, a] of Object.entries(next.answers)) {
-      const before = prev.answers[id];
+      const before = answerFor(prev.answers, id);
       const last = a.attempts[a.attempts.length - 1];
       if (!last || a.pending) continue;
-      const changed = !before || before.attempts.length !== a.attempts.length || before.pending || (before.awaitingSelfCheck && !a.awaitingSelfCheck);
+      const lastBefore = before?.attempts[before.attempts.length - 1];
+      // A changed judgement replaces its attempt: same count, a different one.
+      const replaced = !!lastBefore && (lastBefore.at !== last.at || lastBefore.choiceId !== last.choiceId);
+      const changed = !before || before.attempts.length !== a.attempts.length || replaced || before.pending || (before.awaitingSelfCheck && !a.awaitingSelfCheck);
       if (!changed) continue;
       if (a.awaitingSelfCheck) said.push('Compare your answer with the reference.');
       else if (last.verdict === 'correct') said.push('Correct.');

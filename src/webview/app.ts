@@ -6,7 +6,7 @@ import type { GraphNode, ReviewGraph } from '../contract/graph';
 import type { Depth } from '../contract/questions';
 import type { ErrorAction, GraphSource, HostToWebview, ReviewAction, ViewState } from '../protocol';
 import { GraphIndex } from '../review/order';
-import type { ReviewSnapshot } from '../review/types';
+import { answerFor, type ReviewSnapshot } from '../review/types';
 import { ReviewControls } from './controls';
 import { h } from './dom';
 import { computeFog, hiddenByFog, NO_FOG, selectable, type Fog } from './fog';
@@ -341,9 +341,9 @@ export class App {
       if (gate.step === 'familiarity') text = `Have you worked with ${name} before?`;
       else if (explored(gate.nodeId)) text = `Explored ${name}. Continue when you’re ready.`;
       else if (!gate.questionId) text = 'One moment: the questions are still being written.';
-      else if (review.answers[gate.questionId]?.pending) text = 'Let me read your answer…';
-      else if (review.answers[gate.questionId]?.awaitingSelfCheck) text = 'Compare yours with what a good answer covers.';
-      else if (review.answers[gate.questionId]?.attempts.length) text = 'Not quite. Look at the hint and try again.';
+      else if (answerFor(review.answers, gate.questionId)?.pending) text = 'Let me read your answer…';
+      else if (answerFor(review.answers, gate.questionId)?.awaitingSelfCheck) text = 'Compare yours with what a good answer covers.';
+      else if (answerFor(review.answers, gate.questionId)?.attempts.length) text = 'Not quite. Look at the hint and try again.';
       return { id: gate.nodeId, text };
     }
     if (this.socratesNote) return { id: this.socratesNote.id, text: this.socratesNote.text };

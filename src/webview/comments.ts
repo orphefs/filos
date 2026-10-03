@@ -36,10 +36,20 @@ function oneLine(text: string, max: number): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
+/**
+ * A posted comment is on GitHub, and an accepted one is what a running post sends: neither changes
+ * here (the host refuses it too). Posted ones offer no edits at all; the others wait for the post.
+ */
+function lockOf(c: DraftComment, ctx: PaneContext): { posted: boolean; frozen: boolean } {
+  const posted = isPosted(c, ctx.ui);
+  return { posted, frozen: posted || (ctx.review.post.status === 'posting' && c.status === 'accepted') };
+}
+
 export function commentCard(c: DraftComment, ctx: PaneContext): HTMLElement {
   const titleId = uid('ct');
   const card = h('article', { class: `ccard ccard--${c.status}`, 'data-comment-id': c.id, 'data-status': c.status, 'aria-labelledby': titleId, tabindex: -1, 'data-focus-key': `c:${c.id}` });
-  const amending = ctx.ui.amending.has(c.id);
+  const { posted, frozen } = lockOf(c, ctx);
+  const amending = ctx.ui.amending.has(c.id) && !frozen;
 
   // Head: severity, where, and where it came from.
   const head = h('div', { class: 'ccard-head', id: titleId });
@@ -51,7 +61,10 @@ export function commentCard(c: DraftComment, ctx: PaneContext): HTMLElement {
     head.append(h('span', { class: `loc loc--static${c.file ? ' loc--file' : ''}` }, where));
   }
   if (c.amended) head.append(h('span', { class: 'ctag' }, 'Edited'));
-  if (isPosted(c, ctx.ui)) head.append(h('span', { class: 'ctag ctag--posted' }, 'Posted'));
+  if (posted) head.append(h('span', { class: 'ctag ctag--posted' }, 'Posted'));
+  if (c.outdated) {
+    head.append(h('span', { class: 'ctag ctag--outdated', title: 'Written on an earlier commit than the one under review: its line may have moved, so it is posted in the review body.' }, 'Earlier commit'));
+  }
   card.append(head);
   card.append(h('p', { class: 'ccard-origin' }, origin(c, ctx)));
 
@@ -62,12 +75,15 @@ export function commentCard(c: DraftComment, ctx: PaneContext): HTMLElement {
         'p',
         { class: `ccard-status status--${c.status}` },
         h('strong', {}, word),
-        c.status === 'accepted' ? ' Will be posted.' : ' Won’t be posted.',
+        c.status === 'accepted' ? (posted ? ' Posted to the pull request.' : ' Will be posted.') : ' Won’t be posted.',
         ' ',
-        paneButton('Undo', `c:${c.id}:undo`, () => ctx.act({ type: 'commentAction', id: c.id, action: 'reopen' }, [`c:${c.id}:accept`, `c:${c.id}`]), {
-          class: 'link-button',
-          'aria-label': `Undo: make this comment a draft again`,
-        }),
+        posted
+          ? null
+          : paneButton('Undo', `c:${c.id}:undo`, () => ctx.act({ type: 'commentAction', id: c.id, action: 'reopen' }, [`c:${c.id}:accept`, `c:${c.id}`]), {
+              class: 'link-button',
+              'aria-label': `Undo: make this comment a draft again`,
+              'aria-disabled': frozen ? 'true' : undefined,
+            }),
       ),
     );
   }
@@ -80,19 +96,21 @@ export function commentCard(c: DraftComment, ctx: PaneContext): HTMLElement {
 
   if (c.status !== 'rejected' && !amending) {
     const row = h('div', { class: 'button-row ccard-actions' });
-    if (c.status === 'draft') {
+    if (c.status === 'draft' && !posted) {
       row.append(
         paneButton('Accept', `c:${c.id}:accept`, () => ctx.act({ type: 'commentAction', id: c.id, action: 'accept' }, [`c:${c.id}:undo`]), { class: 'primary', 'aria-describedby': titleId }),
         paneButton('Reject', `c:${c.id}:reject`, () => ctx.act({ type: 'commentAction', id: c.id, action: 'reject' }, [`c:${c.id}:undo`]), { 'aria-describedby': titleId }),
       );
     }
-    row.append(
-      paneButton('Amend', `c:${c.id}:amend`, () => {
-        ctx.ui.amending.add(c.id);
-        if (!ctx.drafts.get(`amend:${c.id}`)) ctx.drafts.set(`amend:${c.id}`, c.body);
-        ctx.rerender([`amend:${c.id}`]);
-      }),
-    );
+    if (!posted) {
+      row.append(
+        paneButton('Amend', `c:${c.id}:amend`, () => {
+          ctx.ui.amending.add(c.id);
+          if (!ctx.drafts.get(`amend:${c.id}`)) ctx.drafts.set(`amend:${c.id}`, c.body);
+          ctx.rerender([`amend:${c.id}`]);
+        }, { 'aria-disabled': frozen ? 'true' : undefined }),
+      );
+    }
     const open = ctx.ui.openThreads.has(c.id);
     const n = c.thread.length;
     row.append(
@@ -143,6 +161,7 @@ function amendEditor(c: DraftComment, ctx: PaneContext): HTMLElement {
 }
 
 function thread(c: DraftComment, ctx: PaneContext): HTMLElement {
+  const { posted, frozen } = lockOf(c, ctx);
   const box = h('section', { class: 'thread', 'aria-label': 'Discussion with Claude Code' });
   if (c.thread.length) {
     const list = h('ol', { class: 'thread-list' });
@@ -158,7 +177,9 @@ function thread(c: DraftComment, ctx: PaneContext): HTMLElement {
             h('blockquote', {}, m.proposal),
             inUse
               ? h('p', { class: 'ctag ctag--inuse' }, '✓ In use')
-              : paneButton('Use this version', `c:${c.id}:adopt:${i}`, () => ctx.act({ type: 'adoptProposal', id: c.id, index: i }, [`c:${c.id}:adopt:${i}`, `thread:${c.id}`]), { class: 'secondary' }),
+              : posted
+                ? null
+                : paneButton('Use this version', `c:${c.id}:adopt:${i}`, () => ctx.act({ type: 'adoptProposal', id: c.id, index: i }, [`c:${c.id}:adopt:${i}`, `thread:${c.id}`]), { class: 'secondary', 'aria-disabled': frozen ? 'true' : undefined }),
           ),
         );
       }

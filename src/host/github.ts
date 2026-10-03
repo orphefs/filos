@@ -29,12 +29,22 @@ export interface PullRequest {
   /** The commit GitHub has as the PR's head; reviews are posted against it. */
   headRefOid: string;
   baseRefName: string;
+  /** OPEN, CLOSED or MERGED. `gh pr view` also finds a branch's closed and merged PRs; only an open one is posted to. */
+  state?: string;
+  /** The PR's head branch on GitHub. */
+  headRefName?: string;
 }
 
 export type PullRequestLookup = { ok: true; pr: PullRequest } | { ok: false; reason: string };
 
 /** A failed gh call, with a message that is safe to show (no link syntax, bounded). */
 export class GhError extends Error {
+  /**
+   * For a post: the request may still have reached GitHub (gh was killed, or the answer was a 5xx
+   * or a broken connection), so the review may exist. Posting again could post it twice.
+   */
+  uncertain = false;
+
   constructor(
     message: string,
     readonly kind: 'notInstalled' | 'auth' | 'noPullRequest' | 'noRemote' | 'timeout' | 'cancelled' | 'api' | 'failed',
@@ -46,9 +56,13 @@ export class GhError extends Error {
   }
 }
 
-export const PR_VIEW_FIELDS = 'number,url,headRefOid,baseRefName';
+export const PR_VIEW_FIELDS = 'number,url,headRefOid,baseRefName,state,headRefName';
 const VIEW_TIMEOUT_MS = 30_000;
-const POST_TIMEOUT_MS = 60_000;
+/**
+ * Long on purpose: a post killed half way may still land, and its outcome is then unknown. A big
+ * review on a slow GitHub Enterprise link can take a while; a kill is the last resort.
+ */
+const POST_TIMEOUT_MS = 600_000;
 
 const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const REPO = /^[A-Za-z0-9._-]{1,100}$/;
@@ -146,7 +160,15 @@ export function pullRequestFromView(raw: unknown, repoFallback?: { host: string;
   const fromUrl = parsed && parsed.number === number ? parsed : undefined;
   const where = fromUrl ?? repoFallback;
   if (!where) return undefined;
-  return { host: where.host, owner: where.owner, repo: where.repo, number, url: fromUrl ? url : `https://${where.host}/${where.owner}/${where.repo}/pull/${number}`, headRefOid: v.headRefOid, baseRefName: v.baseRefName };
+  const pr: PullRequest = { host: where.host, owner: where.owner, repo: where.repo, number, url: fromUrl ? url : `https://${where.host}/${where.owner}/${where.repo}/pull/${number}`, headRefOid: v.headRefOid, baseRefName: v.baseRefName };
+  if (typeof v.state === 'string' && v.state.trim()) pr.state = v.state.trim().toUpperCase();
+  if (typeof v.headRefName === 'string' && v.headRefName.trim()) pr.headRefName = v.headRefName;
+  return pr;
+}
+
+/** Same repository and number: the same pull request. */
+export function samePullRequest(a: Pick<PullRequest, 'host' | 'owner' | 'repo' | 'number'>, b: Pick<PullRequest, 'host' | 'owner' | 'repo' | 'number'>): boolean {
+  return a.host === b.host && a.owner.toLowerCase() === b.owner.toLowerCase() && a.repo.toLowerCase() === b.repo.toLowerCase() && a.number === b.number;
 }
 
 /** `gh repo view --json nameWithOwner,url`, checked. */
@@ -175,10 +197,21 @@ const parseJson = (text: string): unknown => {
   }
 };
 
-/** The open pull request for the checked-out branch, or why there's none to post to. */
-export async function detectPullRequest(o: GhOptions): Promise<PullRequestLookup> {
+/**
+ * The pull request for the checked-out branch, or why there's none. With `known` (a PR found
+ * before), that same PR again, by its URL, whatever is checked out now. Check `state` (postTargetOf
+ * does): for a branch without an open PR, gh answers with its latest closed or merged one.
+ */
+export async function detectPullRequest(o: GhOptions, known?: Pick<PullRequest, 'host' | 'owner' | 'repo' | 'number'>): Promise<PullRequestLookup> {
   try {
-    const view = await gh(o, ['pr', 'view', '--json', PR_VIEW_FIELDS]);
+    let selector: string[] = [];
+    if (known) {
+      const url = `https://${known.host}/${known.owner}/${known.repo}/pull/${known.number}`;
+      const back = parsePullRequestUrl(url);
+      if (!back || !samePullRequest(back, known)) return { ok: false, reason: 'The pull request details look wrong, so Filos stopped before posting.' };
+      selector = [url];
+    }
+    const view = await gh(o, ['pr', 'view', ...selector, '--json', PR_VIEW_FIELDS]);
     if (view.exitCode !== 0 || view.spawnError || view.aborted || view.timedOut) throw ghFailure(view, 'looking up the pull request', o.gh, o.timeoutMs);
     const raw = parseJson(view.stdout);
     let pr = pullRequestFromView(raw);
@@ -195,8 +228,15 @@ export async function detectPullRequest(o: GhOptions): Promise<PullRequestLookup
   }
 }
 
+/** Where a post would go: an open pull request, or why there's none (a closed or merged one isn't posted to). */
 export function postTargetOf(lookup: PullRequestLookup): PostTarget {
-  return lookup.ok ? { kind: 'github', repo: `${lookup.pr.owner}/${lookup.pr.repo}`, number: lookup.pr.number, url: lookup.pr.url } : { kind: 'none', reason: lookup.reason };
+  if (!lookup.ok) return { kind: 'none', reason: lookup.reason };
+  const pr = lookup.pr;
+  if (pr.state !== 'OPEN') {
+    const what = pr.state === 'MERGED' ? 'is merged' : pr.state === 'CLOSED' ? 'is closed' : "isn't known to be open";
+    return { kind: 'none', reason: `The branch's pull request (${pr.owner}/${pr.repo}#${pr.number}) ${what}, so Filos won't post to it. Use Export instead.` };
+  }
+  return { kind: 'github', repo: `${pr.owner}/${pr.repo}`, number: pr.number, url: pr.url };
 }
 
 // ---- posting --------------------------------------------------------------------------------
@@ -226,13 +266,14 @@ export function reviewRequest(pr: PullRequest, review: GithubReview): ReviewRequ
 }
 
 /**
- * Whether the local review matches what GitHub has: inline comments need the same head commit and
- * base branch, or their lines may not be lines of the PR's diff (GitHub then refuses the review).
+ * Whether the review matches what GitHub has: inline comments need the commit that was reviewed
+ * (`headOid`, resolved when the diff was computed) to be the PR's head, and the same base branch.
+ * Otherwise their lines may have moved, or not be lines of the PR's diff at all.
  */
 export function inlineMismatch(pr: PullRequest, local: { headOid?: string; base: string }): string | undefined {
   if (!local.headOid || local.headOid !== pr.headRefOid) {
     const short = (s?: string) => (s ? s.slice(0, 7) : 'unknown');
-    return `Your checkout (${short(local.headOid)}) isn't the pull request's head commit (${short(pr.headRefOid)}): push or pull first so lines match.`;
+    return `The commit you reviewed (${short(local.headOid)}) isn't the pull request's head (${short(pr.headRefOid)}): the pull request changed since, and lines may have moved.`;
   }
   const base = local.base.replace(/^refs\/(?:heads|remotes)\//, '');
   if (base !== pr.baseRefName && !base.endsWith(`/${pr.baseRefName}`)) {
@@ -247,29 +288,46 @@ export interface PostPlan {
   general: number;
   /** Why everything goes in the body, if it does. */
   mismatch?: string;
+  /** Comments on a line of an earlier commit than the one reviewed: they go in the body. */
+  outdated: number;
 }
 
 /**
- * What a post would send: accepted comments inline when their head line is in the diff and the
- * checkout matches the PR, otherwise in the review body with their file and line.
+ * What a post would send: accepted comments inline when their head line is in the diff, the line is
+ * one of the reviewed commit (`local.headOid`) and that commit is the PR's head; otherwise in the
+ * review body with their file and line.
  */
 export function planPost(pr: PullRequest, comments: readonly DraftComment[], headLines: ReadonlyMap<string, ReadonlySet<number>>, local: { headOid?: string; base: string }): PostPlan {
   const mismatch = inlineMismatch(pr, local);
-  const review = buildGithubReview(comments, mismatch ? new Map() : headLines);
-  const posted = comments.filter((c) => c.status === 'accepted' && c.body.trim()).length;
-  return { request: reviewRequest(pr, review), inline: review.comments.length, general: posted - review.comments.length, ...(mismatch ? { mismatch } : {}) };
+  const anchored = (c: DraftComment) => c.commit === local.headOid;
+  const review = buildGithubReview(comments, mismatch ? new Map() : headLines, anchored);
+  const accepted = comments.filter((c) => c.status === 'accepted' && c.body.trim());
+  const outdated = mismatch ? 0 : accepted.filter((c) => c.file && c.line && !anchored(c)).length;
+  return { request: reviewRequest(pr, review), inline: review.comments.length, general: accepted.length - review.comments.length, ...(mismatch ? { mismatch } : {}), outdated };
 }
 
-/** The modal's text: where it goes, how many comments, and that it is public. Plain text. */
-export function confirmationText(pr: PullRequest, plan: PostPlan): { message: string; detail: string } {
+/**
+ * The modal's text: where it goes, how many comments, and that it is public. Plain text. Anything
+ * the reviewer should weigh first (the PR changed since the review, an earlier post that may have
+ * landed) leads the detail, and the question then says "anyway".
+ */
+export function confirmationText(pr: PullRequest, plan: PostPlan, extra: { maybePosted?: number } = {}): { message: string; detail: string } {
   const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
+  const warnings: string[] = [];
+  if (extra.maybePosted) {
+    warnings.push(
+      `An earlier attempt to post ${n(extra.maybePosted, 'of these comments', 'of these comments')} ended without a clear answer from GitHub, so ${extra.maybePosted === 1 ? 'it' : 'they'} may already be on the pull request. Check it first, or ${extra.maybePosted === 1 ? 'it' : 'they'} may be posted twice.`,
+    );
+  }
+  if (plan.mismatch) warnings.push(`${plan.mismatch} Every comment goes in the review body, with its file and line.`);
+  else if (plan.outdated) warnings.push(`${n(plan.outdated, 'comment was', 'comments were')} written on an earlier commit than the one you reviewed, so ${plan.outdated === 1 ? 'it goes' : 'they go'} in the review body, with ${plan.outdated === 1 ? 'its' : 'their'} file and line.`);
   const parts: string[] = [];
   if (plan.inline) parts.push(`${n(plan.inline, 'comment', 'comments')} inline on changed lines`);
   if (plan.general) parts.push(`${n(plan.general, 'comment', 'comments')} in the review body`);
-  const lines = [`${parts.join(' and ')}.`];
-  if (plan.mismatch) lines.push(`${plan.mismatch} Every comment goes in the review body, with its file and line.`);
+  const lines = [...warnings, `${parts.join(' and ')}.`];
   lines.push('The review is public: anyone who can see the pull request can read it, and GitHub notifies its author. It is posted as you, through the GitHub CLI.');
-  return { message: `Post your review to ${pr.owner}/${pr.repo}#${pr.number}?`, detail: lines.join('\n\n') };
+  const where = `${pr.owner}/${pr.repo}#${pr.number}`;
+  return { message: warnings.length ? `Post your review to ${where} anyway?` : `Post your review to ${where}?`, detail: lines.join('\n\n') };
 }
 
 export interface PostResult {
@@ -278,10 +336,19 @@ export interface PostResult {
   id?: number;
 }
 
-/** POSTs the review with `gh api`; the JSON goes on stdin, never into argv. Rejects with GhError. */
+/**
+ * POSTs the review with `gh api`; the JSON goes on stdin, never into argv. Rejects with GhError,
+ * `uncertain` unless gh never ran or GitHub plainly refused the request (a 4xx, a login problem).
+ */
 export async function postReview(pr: PullRequest, request: ReviewRequest, o: GhOptions): Promise<PostResult> {
   const r = await gh(o, request.args, JSON.stringify(request.payload), POST_TIMEOUT_MS);
-  if (r.exitCode !== 0 || r.spawnError || r.aborted || r.timedOut) throw ghFailure(r, 'posting the review', o.gh, o.timeoutMs ?? POST_TIMEOUT_MS);
+  if (r.exitCode !== 0 || r.spawnError || r.aborted || r.timedOut) {
+    const e = ghFailure(r, 'posting the review', o.gh, o.timeoutMs ?? POST_TIMEOUT_MS);
+    const status = /\(HTTP (\d{3})\)/.exec(r.stderrTail)?.[1];
+    const refused = !!r.spawnError || e.kind === 'notInstalled' || e.kind === 'auth' || (!!status && status.startsWith('4'));
+    e.uncertain = !refused;
+    throw e;
+  }
   const j = parseJson(r.stdout) as { html_url?: unknown; id?: unknown } | undefined;
   const out: PostResult = {};
   if (typeof j?.id === 'number') out.id = j.id;

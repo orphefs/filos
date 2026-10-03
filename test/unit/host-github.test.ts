@@ -15,6 +15,7 @@ import {
   INLINE_ONLY_BODY,
   inlineMismatch,
   parsePullRequestUrl,
+  samePullRequest,
   planPost,
   postReview,
   postTargetOf,
@@ -54,11 +55,12 @@ function calls(): Call[] {
 
 /** Options for the fake: its mode and extra answers through the environment, recording every call. */
 function opts(env: Record<string, string> = {}, over: Partial<GhOptions> = {}): GhOptions {
-  return { gh: FAKE_GH, cwd: scratch, env: { ...process.env, FAKE_GH_RECORD: RECORD, FAKE_GH_HEAD_OID: OID, FAKE_GH_MODE: 'ok', ...env }, ...over };
+  return { gh: FAKE_GH, cwd: scratch, env: { ...process.env, FAKE_GH_RECORD: RECORD, FAKE_GH_HEAD_OID: OID, FAKE_GH_HEAD_REF: 'feature-x', FAKE_GH_MODE: 'ok', ...env }, ...over };
 }
 
-const PR: PullRequest = { host: 'github.com', owner: 'acme', repo: 'ledger', number: 42, url: 'https://github.com/acme/ledger/pull/42', headRefOid: OID, baseRefName: 'main' };
+const PR: PullRequest = { host: 'github.com', owner: 'acme', repo: 'ledger', number: 42, url: 'https://github.com/acme/ledger/pull/42', headRefOid: OID, baseRefName: 'main', state: 'OPEN', headRefName: 'feature-x' };
 
+/** An accepted comment drafted while OID was under review (its line is a line of OID). */
 const comment = (over: Partial<DraftComment>): DraftComment => ({
   id: 'c1',
   body: 'A comment.',
@@ -67,6 +69,7 @@ const comment = (over: Partial<DraftComment>): DraftComment => ({
   status: 'accepted',
   amended: false,
   thread: [],
+  commit: OID,
   ...over,
 });
 
@@ -145,6 +148,34 @@ describe('detectPullRequest (fake gh)', () => {
     assert.match(!r.ok ? r.reason : '', /couldn't be read/);
   });
 
+  it('with a PR found before, looks that PR up by its URL, whatever is checked out', async () => {
+    const r = await detectPullRequest(opts({ FAKE_GH_PR_NUMBER: '99' }), { ...PR, number: 7 });
+    assert.ok(r.ok);
+    assert.equal(r.pr.number, 7, 'the PR asked for, not the one of the checked-out branch (#99)');
+    assert.deepEqual(calls()[0].argv, ['pr', 'view', 'https://github.com/acme/ledger/pull/7', '--json', PR_VIEW_FIELDS]);
+    assert.ok(samePullRequest(r.pr, { ...PR, number: 7 }));
+    assert.ok(!samePullRequest(r.pr, PR));
+    const odd = await detectPullRequest(opts(), { ...PR, owner: '-x' });
+    assert.equal(odd.ok, false, 'a PR that fails the checks is never passed to gh');
+    assert.equal(calls().length, 1);
+  });
+
+  it('a merged or closed PR (gh pr view finds those too) is no post target', async () => {
+    for (const [state, what] of [
+      ['MERGED', 'is merged'],
+      ['CLOSED', 'is closed'],
+    ]) {
+      const r = await detectPullRequest(opts({ FAKE_GH_STATE: state }));
+      assert.ok(r.ok);
+      assert.equal(r.pr.state, state);
+      const t = postTargetOf(r);
+      assert.equal(t.kind, 'none');
+      assert.match(t.kind === 'none' ? t.reason : '', new RegExp(`acme/ledger#42\\) ${what}, so Filos won't post to it`));
+    }
+    const unknown = postTargetOf({ ok: true, pr: { ...PR, state: undefined } });
+    assert.equal(unknown.kind, 'none', 'a PR not known to be open is not posted to either');
+  });
+
   it('a GitHub Enterprise host is kept, and posted to with --hostname', async () => {
     const r = await detectPullRequest(opts({ FAKE_GH_HOST: 'github.acme.example' }));
     assert.ok(r.ok);
@@ -172,8 +203,8 @@ describe('parsing gh answers', () => {
   });
 
   it('pullRequestFromView checks number, commit and base; a URL/number mismatch needs the fallback', () => {
-    const view = { number: 42, url: PR.url, headRefOid: OID, baseRefName: 'main' };
-    assert.deepEqual(pullRequestFromView(view), PR);
+    const view = { number: 42, url: PR.url, headRefOid: OID, baseRefName: 'main', state: 'open', headRefName: 'feature-x' };
+    assert.deepEqual(pullRequestFromView(view), PR, 'the state is upper-cased');
     assert.equal(pullRequestFromView({ ...view, number: 0 }), undefined);
     assert.equal(pullRequestFromView({ ...view, headRefOid: 'HEAD' }), undefined);
     assert.equal(pullRequestFromView({ ...view, baseRefName: '' }), undefined);
@@ -231,6 +262,28 @@ describe('postReview (fake gh)', () => {
     await assert.rejects(postReview(PR, plan.request, opts({ FAKE_GH_MODE: 'slow', FAKE_GH_DELAY_MS: '20000' }, { timeoutMs: 300 })), (e: unknown) => e instanceof GhError && e.kind === 'timeout');
     assert.ok(Date.now() - t0 < 5000);
   });
+
+  it('a post that may have reached GitHub (killed after sending, a 5xx) is uncertain; a refusal is not', async () => {
+    const plan = planPost(PR, [comment({})], new Map(), { headOid: OID, base: 'main' });
+    const failure = async (env: Record<string, string>, over: Partial<GhOptions> = {}): Promise<GhError> => {
+      try {
+        await postReview(PR, plan.request, opts(env, over));
+      } catch (e) {
+        assert.ok(e instanceof GhError);
+        return e;
+      }
+      assert.fail('the post should fail');
+    };
+    const killed = await failure({ FAKE_GH_MODE: 'apislow', FAKE_GH_DELAY_MS: '20000' }, { timeoutMs: 300 });
+    assert.deepEqual([killed.kind, killed.uncertain], ['timeout', true]);
+    assert.ok(calls().some((c) => c.argv[0] === 'api' && c.stdin), 'the request had been read when gh was killed');
+    const gateway = await failure({ FAKE_GH_MODE: 'api502' });
+    assert.deepEqual([gateway.kind, gateway.uncertain], ['api', true]);
+    assert.match(gateway.message, /HTTP 502/);
+    assert.equal((await failure({ FAKE_GH_MODE: 'apierror' })).uncertain, false, 'a 422 is a refusal');
+    assert.equal((await failure({ FAKE_GH_MODE: 'auth' })).uncertain, false);
+    assert.equal((await failure({}, { gh: join(scratch, 'no-such-gh') })).uncertain, false, 'gh never ran');
+  });
 });
 
 describe('planning a post', () => {
@@ -252,7 +305,7 @@ describe('planning a post', () => {
     assert.ok(!JSON.stringify(plan.request.payload).includes('A draft'));
   });
 
-  it("a checkout that isn't the PR's head (or a different base) puts every comment in the body", () => {
+  it("a reviewed commit that isn't the PR's head (or a different base) puts every comment in the body", () => {
     const moved = planPost(PR, accepted, sampleHeadLines(), { headOid: OTHER_OID, base: 'main' });
     assert.match(moved.mismatch ?? '', /bbbbbbb.*aaaaaaa/);
     assert.equal(moved.inline, 0);
@@ -270,8 +323,29 @@ describe('planning a post', () => {
     assert.equal(t.message, 'Post your review to acme/ledger#42?');
     assert.match(t.detail, /^1 comment inline on changed lines and 2 comments in the review body\./);
     assert.match(t.detail, /public/);
+    assert.equal(t.detail.split('\n\n').length, 2, 'no warning when everything matches');
+    // A PR that changed since the review: the warning leads, and the question says "anyway".
     const moved = confirmationText(PR, planPost(PR, accepted.slice(0, 1), sampleHeadLines(), { headOid: OTHER_OID, base: 'main' }));
-    assert.match(moved.detail, /^1 comment in the review body\.\n\nYour checkout .* Every comment goes in the review body/);
+    assert.equal(moved.message, 'Post your review to acme/ledger#42 anyway?');
+    assert.match(moved.detail, /^The commit you reviewed \(bbbbbbb\) isn't the pull request's head \(aaaaaaa\): the pull request changed since, and lines may have moved\. Every comment goes in the review body, with its file and line\.\n\n1 comment in the review body\./);
+    // An earlier post that ended without a clear answer may have landed.
+    const unsure = confirmationText(PR, planPost(PR, accepted.slice(0, 1), sampleHeadLines(), { headOid: OID, base: 'main' }), { maybePosted: 1 });
+    assert.equal(unsure.message, 'Post your review to acme/ledger#42 anyway?');
+    assert.match(unsure.detail, /^An earlier attempt to post 1 of these comments ended without a clear answer from GitHub, so it may already be on the pull request\. Check it first, or it may be posted twice\.\n\n1 comment inline/);
+  });
+
+  it('a comment on a line of an earlier commit than the one reviewed never goes inline', () => {
+    // c1 was drafted when OTHER_OID was under review (a review re-run on the new head restored it):
+    // its line 18 is a line of the diff now, but not necessarily the same line.
+    const restored = [comment({ id: 'c1', file: 'src/money/round.ts', line: 18, body: 'Old line.', commit: OTHER_OID }), comment({ id: 'c2', file: 'src/money/round.ts', line: 18, body: 'Unknown commit.', commit: undefined }), accepted[0]];
+    const plan = planPost(PR, restored, sampleHeadLines(), { headOid: OID, base: 'main' });
+    assert.equal(plan.mismatch, undefined);
+    assert.deepEqual([plan.inline, plan.general, plan.outdated], [1, 2, 2]);
+    assert.deepEqual(plan.request.payload.comments.map((c) => c.body), ['**Blocking:** Inline on a changed line.']);
+    assert.match(plan.request.payload.body, /` src\/money\/round\.ts:18 `: \*\*Suggestion:\*\* Old line\./);
+    const t = confirmationText(PR, plan);
+    assert.equal(t.message, 'Post your review to acme/ledger#42 anyway?');
+    assert.match(t.detail, /^2 comments were written on an earlier commit than the one you reviewed, so they go in the review body/);
   });
 
   it('refuses to build a request for PR details that fail the checks', () => {

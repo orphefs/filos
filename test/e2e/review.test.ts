@@ -491,7 +491,7 @@ export function registerReviewTests(): void {
       assert.deepEqual(s.post, { target: { kind: 'github', repo: 'acme/ledger', number: 42, url: 'https://github.com/acme/ledger/pull/42' }, status: 'idle' });
       const views = calls().filter((c) => c.argv[0] === 'pr');
       assert.equal(views.length, 1, 'one lookup when the review starts');
-      assert.deepEqual(views[0].argv, ['pr', 'view', '--json', 'number,url,headRefOid,baseRefName']);
+      assert.deepEqual(views[0].argv, ['pr', 'view', '--json', 'number,url,headRefOid,baseRefName,state,headRefName']);
       assert.equal(views[0].cwd, workspace);
 
       await openTab(wb, 'comments');

@@ -159,6 +159,9 @@ export async function mergeBase(root: string, a: string, b: string): Promise<str
  * The head's .gitattributes comes with the PR and could mark a changed file "-diff", which hides
  * its lines ("Binary files differ"). On git 2.40+ attributes are read from the merge base instead;
  * diffWarnings flags what is left (older git, real binaries, a changed .gitattributes).
+ * Hunks are shaped as GitHub shapes them (3 lines of context, no merged hunks, the default
+ * algorithm), whatever the user's diff.* settings say: inline comments are placed on the lines
+ * these hunks show, and GitHub refuses a review with a comment on any other line.
  */
 export async function diff(root: string, base: string, head: string, opts: GitOptions = {}): Promise<string> {
   const maxBuffer = opts.maxBuffer ?? DEFAULT_MAX_BUFFER;
@@ -168,7 +171,7 @@ export async function diff(root: string, base: string, head: string, opts: GitOp
     if (mb) attrs.push(`--attr-source=${mb}`);
   }
   try {
-    return await git(root, [...attrs, 'diff', '--no-color', '--no-ext-diff', '--no-textconv', '-M', '--src-prefix=a/', '--dst-prefix=b/', `${base}...${head}`, '--'], { ...opts, maxBuffer });
+    return await git(root, [...attrs, 'diff', '--no-color', '--no-ext-diff', '--no-textconv', '-M', '-U3', '--inter-hunk-context=0', '--diff-algorithm=myers', '--src-prefix=a/', '--dst-prefix=b/', `${base}...${head}`, '--'], { ...opts, maxBuffer });
   } catch (e) {
     if (e instanceof GitError && e.code === OUTPUT_TOO_LARGE) {
       throw new GitError(

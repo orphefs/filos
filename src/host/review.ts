@@ -168,6 +168,13 @@ export class ReviewController implements vscode.Disposable {
     }
 
     const head = await git.currentBranch(root);
+    // The commit under review, resolved once: the diff, the graph and every comment's line refer to
+    // it, so a later pull or checkout can't move the lines a comment is posted on.
+    const headOid = await git.headCommit(root);
+    if (!headOid) {
+      void vscode.window.showErrorMessage(`Filos: ${head} has no commits to review.`);
+      return;
+    }
     let base = options.base ?? (options.pickBase ? undefined : await git.defaultBaseRef(root));
     if (!base) {
       base = await pickBase(root, head);
@@ -177,11 +184,11 @@ export class ReviewController implements vscode.Disposable {
       this.lastBranchOptions = chosen;
       this.lastAttempt = () => this.reviewCurrentBranch(chosen);
     }
-    if (!(await git.mergeBase(root, base, 'HEAD'))) {
+    if (!(await git.mergeBase(root, base, headOid))) {
       void vscode.window.showErrorMessage(`Filos: ${head} and ${base} have no common history to compare.`);
       return;
     }
-    const diff = await git.diff(root, base, 'HEAD');
+    const diff = await git.diff(root, base, headOid);
     if (!diff.trim()) {
       const choice = await vscode.window.showErrorMessage(`Filos: no committed changes on ${head} since it branched from ${base}. Uncommitted changes are not reviewed.`, 'Choose Base Branch…');
       if (choice) await this.reviewCurrentBranch({ pickBase: true });
@@ -196,7 +203,7 @@ export class ReviewController implements vscode.Disposable {
     }
     const index = readDependencyIndex(root);
     if (index.warning) warnings.push(index.warning);
-    const subjects = await git.commitSubjects(root, base, 'HEAD');
+    const subjects = await git.commitSubjects(root, base, headOid);
     const prTitle = subjects.length === 1 ? subjects[0] : head;
     const repoRoot = realpathSync(root);
     const repoKey = repoKeyFor('branch', repoRoot, await git.originUrl(root));
@@ -204,6 +211,7 @@ export class ReviewController implements vscode.Disposable {
     this.cancelAgent();
     const session = this.startSession({ kind: 'branch', repoRoot, base, head, prTitle }, repoKey);
     session.diff = diff;
+    session.headOid = headOid;
     session.dependencyIndex = index.text;
     // gh takes a second or two; the agent takes minutes. Look the PR up while it works.
     session.pullRequest = this.lookUpPullRequest(repoRoot);
