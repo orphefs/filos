@@ -298,8 +298,8 @@ describe('pull request details from gh', () => {
 });
 
 describe('looking pull requests up through the fake gh', () => {
-  it('by URL, from a neutral folder', async () => {
-    const pr = await viewPullRequest({ gh: FAKE_GH, cwd: scratch, env: env() }, parsePullRequestInput('https://github.com/acme/ledger/pull/9')!);
+  it('by URL, from a neutral folder (a gh that knows every field)', async () => {
+    const pr = await viewPullRequest({ gh: FAKE_GH, cwd: scratch, env: env({ FAKE_GH_EXTRA_FIELDS: 'baseRefOid' }) }, parsePullRequestInput('https://github.com/acme/ledger/pull/9')!);
     assert.equal(pr.number, 9);
     assert.equal(pr.title, "Switch to banker's rounding");
     const call = lastCall();

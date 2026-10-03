@@ -237,6 +237,8 @@ export function registerPullRequestTests(): void {
       rmSync(record, { force: true });
       process.env.FAKE_GH_RECORD = record;
       process.env.FAKE_GH_MODE = 'ok';
+      // A current gh, which knows baseRefOid; the older-gh retry has its own unit test.
+      process.env.FAKE_GH_EXTRA_FIELDS = 'baseRefOid';
       process.env.FAKE_CLAUDE_MODE = 'ok';
 
       // The picker lists the workspace repository's pull requests, which needs a repository with a
@@ -260,7 +262,7 @@ export function registerPullRequestTests(): void {
     });
 
     after(async () => {
-      for (const k of ['FAKE_GH_REMOTE', 'FAKE_GH_PR_JSON', 'FAKE_GH_RECORD', 'FAKE_GH_DELAY_MS', 'FAKE_CLAUDE_DELAY_MS', 'FAKE_CLAUDE_RECORD', 'FAKE_CLAUDE_MODE_QUESTIONS', 'FAKE_CLAUDE_MODE_EVALUATE', 'FAKE_CLAUDE_MODE_THREAD', 'FAKE_CLAUDE_MODE_DRAFTCOMMENTS']) {
+      for (const k of ['FAKE_GH_EXTRA_FIELDS', 'FAKE_GH_REMOTE', 'FAKE_GH_PR_JSON', 'FAKE_GH_RECORD', 'FAKE_GH_DELAY_MS', 'FAKE_CLAUDE_DELAY_MS', 'FAKE_CLAUDE_RECORD', 'FAKE_CLAUDE_MODE_QUESTIONS', 'FAKE_CLAUDE_MODE_EVALUATE', 'FAKE_CLAUDE_MODE_THREAD', 'FAKE_CLAUDE_MODE_DRAFTCOMMENTS']) {
         delete process.env[k];
       }
       process.env.FAKE_GH_MODE = 'ok';

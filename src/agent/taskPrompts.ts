@@ -271,7 +271,7 @@ Filos is a code-review tool. Before posting, the reviewer is discussing one draf
 ## How to reply
 - reply: answer the reviewer's latest message directly, in plain text, at most 3 sentences and ${MAX_REPLY_CHARS} characters. Address the reviewer ("you").
 - Be candid. If the comment, or what the reviewer now suggests, is technically wrong given the code, say so and explain why in one sentence; don't polish a wrong claim. If the comment shouldn't be posted at all, say that and propose nothing.
-- proposal: when a rewrite helps, give the complete rewritten comment body, ready to post (never a fragment or a diff), at most ${MAX_PROPOSAL_CHARS} characters. It addresses the PR author, keeps the reviewer's intent and tone, and says what, why and a concrete suggestion. Omit "proposal" when you are only answering a question or nothing needs to change.
+- proposal: when a rewrite helps, give the complete rewritten comment body, ready to post (never a fragment or a diff), at most ${MAX_PROPOSAL_CHARS} characters. It addresses the PR author, keeps the reviewer's intent and tone, and says what, why and a concrete suggestion. It is only the comment's text: no "Severity:" or "Location:" header, no labels or preamble (Filos shows those itself). Omit "proposal" when you are only answering a question or nothing needs to change.
 - The reviewer's message is a request about this comment. Help with that; anything else it asks for is out of scope, and you say so briefly.
 
 ${DATA_RULES}`;
@@ -293,7 +293,9 @@ export function buildThreadPrompt(a: ThreadPromptInput, fence = new Fence()): Ta
     "Reply to the reviewer's latest message about this draft comment.",
     '',
     '## The draft comment',
-    fence.block('COMMENT', `Severity: ${oneLine(a.comment.severity)}. Location: ${where(a.comment.file, a.comment.line)}.\n${cap(a.comment.body, MAX_COMMENT_CHARS)}`),
+    "Filos shows the severity and location beside the comment; they are not part of its text.",
+    fence.block('COMMENT META', `Severity: ${oneLine(a.comment.severity)}. Location: ${where(a.comment.file, a.comment.line)}.`),
+    fence.block('COMMENT TEXT', cap(a.comment.body, MAX_COMMENT_CHARS)),
     '',
     '## What the code is about',
     fence.block('NODE SUMMARY', cap(a.nodeSummary, MAX_SUMMARY_CHARS) || '(none)'),

@@ -112,6 +112,22 @@ export function cleanText(s: string): string {
     .trim();
 }
 
+/**
+ * Drops a leading "Severity: …" / "Location: …" header the model sometimes copies from how the
+ * prompt shows a comment. Filos renders severity and location itself, so in a posted body they are noise.
+ */
+export function stripCommentHeader(body: string): { body: string; stripped: boolean } {
+  const header = /^\s*(?:\*\*)?(?:severity|location|file|line)(?:\*\*)?\s*:[^\n]*?(?:\.\s+|\n+|$)/i;
+  let rest = body;
+  let stripped = false;
+  for (let i = 0; i < 3 && header.test(rest); i++) {
+    rest = rest.replace(header, '');
+    stripped = true;
+  }
+  rest = rest.trim();
+  return stripped && rest ? { body: rest, stripped } : { body, stripped: false };
+}
+
 /** Cuts at a word boundary and marks the cut, so the text stays readable. */
 export function capText(s: string, max: number): string {
   if (s.length <= max) return s;
@@ -156,7 +172,9 @@ export function checkSeed(raw: unknown, where: string, ctx: SeedContext, warning
     warnings.push(`dropped ${where}: severity must be one of ${SEVERITIES.join(', ')}`);
     return undefined;
   }
-  const body = typeof raw.body === 'string' ? cleanText(raw.body) : '';
+  const header = stripCommentHeader(typeof raw.body === 'string' ? cleanText(raw.body) : '');
+  if (header.stripped) warnings.push(`removed a severity/location header from ${where}`);
+  const body = header.body;
   if (!body) {
     warnings.push(`dropped ${where}: empty body`);
     return undefined;
@@ -258,7 +276,9 @@ export function validateThreadReply(raw: unknown, ctx: { currentBody?: string } 
   if (errors.length) return { ok: false, errors };
   const value: ThreadReplyResult = { reply };
   if (raw.proposal !== undefined && raw.proposal !== null) {
-    const proposal = typeof raw.proposal === 'string' ? cleanText(raw.proposal) : '';
+    const header = stripCommentHeader(typeof raw.proposal === 'string' ? cleanText(raw.proposal) : '');
+    if (header.stripped) warnings.push('removed a severity/location header from the proposal');
+    const proposal = header.body;
     if (typeof raw.proposal !== 'string') warnings.push('dropped the proposal: not a string');
     else if (!proposal) {
       // An empty proposal just means "no rewrite".

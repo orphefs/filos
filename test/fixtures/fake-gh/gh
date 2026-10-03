@@ -120,14 +120,21 @@ if (cmd === '--version' || cmd === 'version') {
   process.exit(0);
 }
 
-// An older gh: --json fields it doesn't know fail before anything else is asked (gh 2.45 has no baseRefOid).
-const unknownFields = (env.FAKE_GH_UNKNOWN_FIELDS || '').split(',').filter(Boolean);
-if (unknownFields.length && argv.includes('--json')) {
-  const asked = (argv[argv.indexOf('--json') + 1] || '').split(',');
-  const bad = asked.find((f) => unknownFields.includes(f));
+// --json fields are checked like gh does: unknown ones fail before anything else is asked. The default
+// is gh 2.45's set (the oldest gh Filos supports; it has no baseRefOid), so a test that relies on a
+// newer field fails unless it opts in with FAKE_GH_EXTRA_FIELDS. FAKE_GH_UNKNOWN_FIELDS removes fields.
+const GH_245_PR_FIELDS = 'additions,assignees,author,autoMergeRequest,baseRefName,body,changedFiles,closed,closedAt,comments,commits,createdAt,deletions,files,headRefName,headRefOid,headRepository,headRepositoryOwner,id,isCrossRepository,isDraft,labels,latestReviews,maintainerCanModify,mergeCommit,mergeStateStatus,mergeable,mergedAt,mergedBy,milestone,number,potentialMergeCommit,projectCards,projectItems,reactionGroups,reviewDecision,reviewRequests,reviews,state,statusCheckRollup,title,updatedAt,url';
+const GH_245_REPO_FIELDS = 'assignableUsers,codeOfConduct,contactLinks,createdAt,defaultBranchRef,deleteBranchOnMerge,description,diskUsage,forkCount,fundingLinks,hasDiscussionsEnabled,hasIssuesEnabled,hasProjectsEnabled,hasWikiEnabled,homepageUrl,id,isArchived,isBlankIssuesEnabled,isEmpty,isFork,isInOrganization,isMirror,isPrivate,isSecurityPolicyEnabled,isTemplate,isUserConfigurationRepository,issueTemplates,issues,labels,languages,latestRelease,licenseInfo,mentionableUsers,mergeCommitAllowed,milestones,mirrorUrl,name,nameWithOwner,openGraphImageUrl,owner,parent,primaryLanguage,projects,pullRequestTemplates,pullRequests,pushedAt,rebaseMergeAllowed,repositoryTopics,securityPolicyUrl,squashMergeAllowed,sshUrl,stargazerCount,templateRepository,updatedAt,url,usesCustomOpenGraphImage,viewerCanAdminister,viewerDefaultCommitEmail,viewerDefaultMergeMethod,viewerHasStarred,viewerPermission,viewerPossibleCommitEmails,viewerSubscription,visibility,watchers';
+if (argv.includes('--json')) {
+  const base = (cmd === 'repo' ? GH_245_REPO_FIELDS : GH_245_PR_FIELDS).split(',');
+  const extra = (env.FAKE_GH_EXTRA_FIELDS || '').split(',').filter(Boolean);
+  const removed = (env.FAKE_GH_UNKNOWN_FIELDS || '').split(',').filter(Boolean);
+  const known = new Set([...base, ...extra].filter((f) => !removed.includes(f)));
+  const asked = (argv[argv.indexOf('--json') + 1] || '').split(',').filter(Boolean);
+  const bad = asked.find((f) => !known.has(f));
   if (bad) {
     record({});
-    fail(1, `Unknown JSON field: "${bad}"\nAvailable fields:\n  additions\n  author\n  baseRefName\n  number`);
+    fail(1, `Unknown JSON field: "${bad}"\nAvailable fields:\n  ${[...known].sort().join('\n  ')}`);
   }
 }
 

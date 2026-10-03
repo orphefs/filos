@@ -541,9 +541,27 @@ describe('task prompts', () => {
     const p = buildThreadPrompt({ comment: { file: 'money/round.ts', line: 10, body: 'Add a test.', severity: 'suggestion' }, nodeSummary: 's', codeExcerpt: code, thread, message: 'Shorter please' });
     assert.ok(!p.user.includes('message 7\n') && p.user.includes('message 19'), 'only the latest messages');
     assert.equal(p.warnings.length, 1);
-    assert.match(p.user, /Severity: suggestion\. Location: money\/round.ts:10\.\nAdd a test\./);
+    // Severity and location sit in their own block, so the model doesn't copy them into a rewrite.
+    assert.match(p.user, /Severity: suggestion\. Location: money\/round.ts:10\./);
+    assert.doesNotMatch(p.user, /Location: money\/round.ts:10\.\nAdd a test\./);
+    assert.match(p.user, /COMMENT TEXT[^\n]*\nAdd a test\./);
     assert.match(p.user, /Shorter please/);
-    for (const must of ['complete rewritten comment body', 'technically wrong', 'Omit "proposal"']) assert.ok(THREAD_SYSTEM.includes(must), must);
+    for (const must of ['complete rewritten comment body', 'technically wrong', 'Omit "proposal"', 'no "Severity:" or "Location:" header']) assert.ok(THREAD_SYSTEM.includes(must), must);
+  });
+
+  it('strips a copied severity/location header from proposals and drafted comments', () => {
+    const t = validateThreadReply({ reply: 'ok', proposal: 'Severity: blocking. Location: transaction_routes.py:86 and 93. Both lookups raise.' });
+    assert.ok(t.ok);
+    if (t.ok) {
+      assert.equal(t.value.proposal, 'Both lookups raise.');
+      assert.ok(t.warnings.some((w) => /severity\/location header/.test(w)));
+    }
+    const multi = validateThreadReply({ reply: 'ok', proposal: '**Severity**: nit\nLocation: a.ts:1\n\nUse a constant.' });
+    assert.ok(multi.ok && multi.value.proposal === 'Use a constant.');
+    const plain = validateThreadReply({ reply: 'ok', proposal: 'The severity: of this bug is high because it loses data.' });
+    assert.ok(plain.ok && plain.value.proposal === 'The severity: of this bug is high because it loses data.', 'a body that merely contains the word stays');
+    const onlyHeader = validateThreadReply({ reply: 'ok', proposal: 'Severity: nit.' });
+    assert.ok(onlyHeader.ok && onlyHeader.value.proposal === 'Severity: nit.', 'never strips a body down to nothing');
   });
 
   it('caps huge inputs', () => {
