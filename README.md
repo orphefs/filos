@@ -16,6 +16,8 @@
 | **Filos: Review Sample PR with Agent** | Runs the agent on the same sample PR. |
 | **Filos: Review Current Branch** | Runs the agent on your workspace's branch compared with its base. |
 
+The sample also opens from a link: `vscode://orphefs.filos/reviewSample`.
+
 The agent runs through your installed CLI and your existing login. Filos never handles credentials.
 
 ## Develop

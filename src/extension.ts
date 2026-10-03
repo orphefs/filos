@@ -31,6 +31,14 @@ export function activate(context: vscode.ExtensionContext): FilosApi {
     command('filos.reviewCurrentBranch', (arg?: unknown) => controller.reviewCurrentBranch(branchOptions(arg))),
     // Base detection guesses (origin/HEAD, main, master); forks and PRs into develop need a choice.
     command('filos.reviewCurrentBranchAgainst', () => controller.reviewCurrentBranch({ pickBase: true })),
+    // Deep link vscode://orphefs.filos/reviewSample opens the bundled sample. Links can come from any
+    // web page, so only the free, local sample is reachable this way; never an agent run.
+    vscode.window.registerUriHandler({
+      handleUri: (uri) => {
+        if (uri.path === '/reviewSample') void vscode.commands.executeCommand('filos.reviewSample');
+        else log.warn(`ignored link ${uri.path}`);
+      },
+    }),
   );
 
   return context.extensionMode === vscode.ExtensionMode.Production ? {} : { __test: createTestApi(controller) };
