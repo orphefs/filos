@@ -70,7 +70,7 @@ describe('ClaudeCliProvider with the fake CLI', () => {
     const rec = JSON.parse(readFileSync(record, 'utf8'));
     assert.equal(rec.promptVia, 'stdin');
     assert.equal(rec.cwd, FAKE_REPO);
-    assert.ok(rec.prompt.includes('-----BEGIN DIFF-----') && rec.prompt.includes('+  const floor = Math.floor(cents);'));
+    assert.ok(/-----BEGIN DIFF [0-9a-f]{12}-----/.test(rec.prompt) && rec.prompt.includes('+  const floor = Math.floor(cents);'));
     assert.ok(rec.prompt.includes('ext:invoice-service'), 'dependency index is in the prompt');
     assert.ok(!rec.argv.some((a: string) => a.includes('Math.floor')), 'the diff never goes into argv');
     assert.equal(rec.flags['--tools'], 'Read,Grep,Glob');

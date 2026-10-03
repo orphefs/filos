@@ -4,7 +4,7 @@
 
 import type { GraphNode, ReviewGraph } from '../contract/graph';
 import type { Depth } from '../contract/questions';
-import type { ErrorAction, GraphSource, HostToWebview, ReviewAction, ViewState } from '../protocol';
+import type { ErrorAction, GraphSource, HostToWebview, LoadingStep, ReviewAction, ViewState } from '../protocol';
 import { GraphIndex } from '../review/order';
 import { answerFor, type ReviewSnapshot } from '../review/types';
 import { ReviewControls } from './controls';
@@ -15,7 +15,8 @@ import { ancestors, buildModel, childrenOf, hasChildren, isContainer, liftEdges,
 import { GraphView, HEADER_H, nodeSize, visibleParent, type RenderContext } from './render';
 import { ReviewPane } from './reviewPane';
 import { Socrates } from './socrates';
-import { errorView, loadingView, waitingView } from './status';
+import { parsePrUrl } from './prRef';
+import { cleanSteps, errorView, LoadingPanel, loadingView, waitingView } from './status';
 import { renderSummary, type SummaryReview } from './summary';
 import { resolveFonts, type Fonts } from './text';
 import { Viewport } from './viewport';
@@ -43,6 +44,8 @@ export class App {
   private readonly review: HTMLElement;
   private readonly titleEl: HTMLElement;
   private readonly metaEl: HTMLElement;
+  /** A pull request's address, as text (the webview doesn't open links). */
+  private readonly urlEl: HTMLElement;
   private readonly warningsEl: HTMLElement;
   private readonly orientationEl: HTMLElement;
   private readonly graphHost: HTMLElement;
@@ -56,6 +59,8 @@ export class App {
   private readonly pane: ReviewPane;
   private readonly socrates: Socrates;
   private fonts: Fonts;
+  /** The loading checklist on screen, updated in place while the host reports progress. */
+  private loadingPanel?: LoadingPanel;
 
   /** Questionnaire / comments / didactic state from the host (absent with an older host). */
   private reviewSnap?: ReviewSnapshot;
@@ -130,6 +135,7 @@ export class App {
 
     this.titleEl = h('h1', { class: 'pr-title' });
     this.metaEl = h('div', { class: 'pr-meta' });
+    this.urlEl = h('p', { class: 'pr-url', hidden: true });
     this.warningsEl = h('ul', { class: 'warnings-list', hidden: true, id: 'filos-warnings' });
     this.orientationEl = h('p', { class: 'orientation' });
     this.summaryEl = h('div', { class: 'summary-scroll' });
@@ -160,7 +166,7 @@ export class App {
     this.review = h(
       'div',
       { class: 'review', hidden: true },
-      h('header', { class: 'topbar' }, this.titleEl, this.metaEl, this.warningsEl, this.controls.el),
+      h('header', { class: 'topbar' }, this.titleEl, this.metaEl, this.urlEl, this.warningsEl, this.controls.el),
       h('section', { class: 'orientation-wrap', 'aria-label': 'Orientation' }, this.orientationEl),
       h(
         'div',
@@ -204,10 +210,10 @@ export class App {
   handle(msg: HostToWebview): void {
     switch (msg.type) {
       case 'loading':
-        this.showStatus('loading', loadingView(msg.message, msg.detail));
+        this.showLoading(msg.message, msg.detail, cleanSteps(msg.steps));
         break;
       case 'error':
-        this.showStatus('error', errorView(msg.message, msg.detail, msg.actions ?? [], (a) => this.action(a)));
+        this.showStatus('error', errorView(msg.message, msg.detail, msg.actions ?? [], (a) => this.action(a), cleanSteps(msg.steps)));
         break;
       case 'load':
         this.load(msg.graph, msg.source, msg.state, msg.warnings ?? []);
@@ -383,7 +389,30 @@ export class App {
     post({ type: 'action', action: a });
   }
 
+  /**
+   * Without steps: the spinner and message, as before. With steps: a checklist that stays on screen
+   * and changes in place, announcing only a new step (agent progress lines would be chatter).
+   */
+  private showLoading(message: string, detail: string | undefined, steps: LoadingStep[] | undefined): void {
+    if (!steps) {
+      this.showStatus('loading', loadingView(message, detail));
+      return;
+    }
+    let news: string | undefined;
+    if (this.mode === 'loading' && this.loadingPanel) {
+      news = this.loadingPanel.update(message, detail, steps);
+    } else {
+      const panel = new LoadingPanel(message, detail, steps);
+      this.showStatus('loading', panel.el);
+      this.loadingPanel = panel;
+      const first = panel.update(message, detail, steps);
+      news = first ? `${message} ${first}` : message;
+    }
+    if (news) this.announce(news);
+  }
+
   private showStatus(mode: Mode, view: HTMLElement): void {
+    this.loadingPanel = undefined;
     this.mode = mode;
     this.statusHost.replaceChildren(view);
     this.statusHost.hidden = false;
@@ -403,7 +432,7 @@ export class App {
     this.index = new GraphIndex(graph);
     this.fog = computeFog(this.index, this.reviewSnap);
     this.source = source;
-    this.key = `${graph.pr?.title ?? ''}\u0000${graph.pr?.head ?? ''}\u0000${graph.pr?.base ?? ''}`;
+    this.key = `${graph.pr?.title ?? ''}\u0000${graph.pr?.head ?? ''}\u0000${graph.pr?.base ?? ''}${graph.pr?.url ? `\u0000${graph.pr.url}` : ''}`;
     this.layouts.clear();
     this.chooseDirection = true;
 
@@ -423,6 +452,7 @@ export class App {
     if (this.selected) this.visited.add(this.selected);
 
     this.renderHeader(graph, source, warnings);
+    this.loadingPanel = undefined;
     this.mode = 'graph';
     this.statusHost.hidden = true;
     this.statusHost.replaceChildren();
@@ -439,9 +469,11 @@ export class App {
     this.titleEl.textContent = graph.pr.title;
     const by = graph.generatedBy;
     const sourceText = source === 'fixture' ? 'Sample data' : `Generated by ${by?.provider ?? 'agent'}${by?.model ? ` (${by.model})` : ''}`;
-    const parts: Node[] = [
-      h('span', { class: 'branch', title: 'head → base' }, h('code', {}, graph.pr.head), ' → ', h('code', {}, graph.pr.base)),
-    ];
+    // A pull request names itself the way GitHub does ("owner/repo#n"); its URL is text only.
+    const pr = parsePrUrl(graph.pr.url);
+    const parts: Node[] = [];
+    if (pr) parts.push(h('span', { class: 'pr-ref', title: `Pull request ${pr.number} in ${pr.owner}/${pr.repo}` }, pr.label));
+    parts.push(h('span', { class: 'branch', title: 'head → base' }, h('code', {}, graph.pr.head), ' → ', h('code', {}, graph.pr.base)));
     if (graph.pr.author) parts.push(h('span', { class: 'author' }, `by ${graph.pr.author}`));
     parts.push(h('span', { class: `source-badge source--${source}`, title: by?.at ? `Built ${by.at}` : '' }, sourceText));
     this.warningsEl.replaceChildren(...warnings.map((w) => h('li', {}, w)));
@@ -459,6 +491,8 @@ export class App {
       parts.push(t);
     }
     this.metaEl.replaceChildren(...parts);
+    this.urlEl.textContent = pr ? pr.url : '';
+    this.urlEl.hidden = !pr;
     this.orientationEl.textContent = graph.orientation;
   }
 

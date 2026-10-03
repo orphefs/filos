@@ -10,7 +10,7 @@
 
 import type { ReviewGraph } from '../src/contract/graph';
 import type { QuestionSet } from '../src/contract/questions';
-import type { HostToWebview, ReviewAction, WebviewToHost } from '../src/protocol';
+import type { HostToWebview, LoadingStep, ReviewAction, WebviewToHost } from '../src/protocol';
 import { MemoryConfidenceStore, type ConfidenceRecord } from '../src/review/confidence';
 import { reviewToMarkdown } from '../src/review/markdown';
 import { ReviewModel, type EvaluationResult, type QuestionsStatus, type ReviewEffect } from '../src/review/model';
@@ -48,7 +48,7 @@ interface Options {
 const DEFAULTS: Options = { mode: 'fast', agent: false, agentFails: false, target: 'none', questions: 'ready', postFails: false };
 
 const SAMPLE_TARGET: PostTarget = { kind: 'none', reason: 'This is the bundled sample: there is no pull request to post to. Export the review as Markdown instead.' };
-const GITHUB_TARGET: PostTarget = { kind: 'github', repo: 'acme/ledger', number: 42, url: 'https://github.com/acme/ledger/pull/42' };
+const GITHUB_TARGET: Extract<PostTarget, { kind: 'github' }> = { kind: 'github', repo: 'acme/ledger', number: 42, url: 'https://github.com/acme/ledger/pull/42' };
 
 /** A small inline set, used only if the fixture can't be fetched. */
 const FALLBACK_QUESTIONS: QuestionSet = {
@@ -99,6 +99,10 @@ let model: ReviewModel | undefined;
 let confidence = new MemoryConfidenceStore(read<Record<string, ConfidenceRecord>>(KEYS.confidence) ?? {});
 let acquired = false;
 let source: 'fixture' | 'agent' = 'fixture';
+/** The last load was a pull request review (a reload of the webview gets the same). */
+let prLoaded = false;
+/** Bumped by every simulated run and every manual send, so an older run stops where it is. */
+let runSeq = 0;
 
 function record(direction: string, msg: unknown): void {
   log.push({ direction, at: Date.now(), msg });
@@ -191,11 +195,25 @@ function sendReview(): void {
   renderOptionState();
 }
 
-async function sendLoad(opts: { agent?: boolean; warnings?: boolean } = {}): Promise<void> {
+/** A pull request review is agent-sourced and posts to GitHub: the switches a real host would set. */
+function becomePullRequest(): void {
+  options.agent = true;
+  options.target = 'github';
+  saveOptions();
+  model?.setAgentAvailable(true);
+  model?.setPostState({ target: GITHUB_TARGET, status: 'idle' });
+}
+
+async function sendLoad(opts: { agent?: boolean; warnings?: boolean; pr?: boolean } = {}): Promise<void> {
   try {
     const g = structuredClone(await fixtures());
-    source = opts.agent ? 'agent' : 'fixture';
-    if (opts.agent) g.generatedBy = { provider: 'claude', model: 'claude-sonnet-5', at: new Date().toISOString() };
+    source = opts.agent || opts.pr ? 'agent' : 'fixture';
+    prLoaded = !!opts.pr;
+    if (source === 'agent') g.generatedBy = { provider: 'claude', model: 'claude-sonnet-5', at: new Date().toISOString() };
+    if (opts.pr) {
+      g.pr = { ...g.pr, url: GITHUB_TARGET.url };
+      becomePullRequest();
+    }
     model ??= buildModel(g);
     send({
       type: 'load',
@@ -215,11 +233,77 @@ async function sendLoad(opts: { agent?: boolean; warnings?: boolean } = {}): Pro
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function simulateRun(): Promise<void> {
+  const seq = ++runSeq;
   send({ type: 'loading', message: 'Reading the PR…', detail: 'claude · feature/bankers-rounding → main' });
   await sleep(700);
+  if (seq !== runSeq) return;
   send({ type: 'loading', message: 'Reading money/round.ts', detail: 'claude · feature/bankers-rounding → main' });
   await sleep(700);
+  if (seq !== runSeq) return;
   await sendLoad({ agent: true });
+}
+
+// ---- simulated pull request start: steps advance while the (fake) agent works ------------------
+
+const PR_LABEL = `${GITHUB_TARGET.repo}#${GITHUB_TARGET.number}`;
+const PR_MESSAGE = `Reviewing ${PR_LABEL}…`;
+const PR_DETAIL = 'claude · feature/bankers-rounding → main';
+
+/** Each frame: [index of the active step, its live detail, the details of the steps already done]. */
+const PR_STEP_LABELS = ['Fetch the pull request', 'Prepare the code', 'Comprehension pass (claude)', 'Write questions (claude)'];
+const PR_DONE_DETAIL = [`#${GITHUB_TARGET.number} · 14 files · +440 −176`, 'feature/bankers-rounding at 3f2a91c', 'Graph: 14 nodes, 17 edges', '9 questions'];
+const PR_FRAMES: [number, string][] = [
+  [0, `gh pr view ${GITHUB_TARGET.url}`],
+  [0, 'Reading the diff…'],
+  [1, 'Fetching feature/bankers-rounding…'],
+  [1, 'Checking out 3f2a91c in a temporary worktree'],
+  [2, 'Starting claude (sonnet)…'],
+  [2, 'Reading src/money/round.ts'],
+  [2, 'Searching for roundToCents'],
+  [2, 'Reading src/invoice/totals.ts'],
+  [2, 'Writing the graph…'],
+  [3, 'Reading the graph…'],
+  [3, 'Writing questions for 4 modules…'],
+];
+
+function prSteps(active: number, detail: string, failed = false): LoadingStep[] {
+  return PR_STEP_LABELS.map((label, i): LoadingStep => {
+    if (i < active) return { label, state: 'done', detail: PR_DONE_DETAIL[i] };
+    if (i === active) return { label, state: failed ? 'failed' : 'active', detail };
+    return { label, state: 'pending' };
+  });
+}
+
+/** @param failAt frame index at which the comprehension pass fails (expired login), or undefined to finish */
+async function simulatePrRun(failAt?: number): Promise<void> {
+  const seq = ++runSeq;
+  for (let f = 0; f < PR_FRAMES.length; f++) {
+    const [active, detail] = PR_FRAMES[f];
+    if (f === failAt) {
+      send({
+        type: 'error',
+        message: 'Your claude session has expired.',
+        detail: 'claude exited with code 1:\nInvalid API key · Please run /login\n\nRun "claude auth login" in a terminal, then try again.',
+        actions: ['login', 'retry', 'useFixture'],
+        steps: prSteps(active, 'claude: login expired (simulated)', true),
+      });
+      return;
+    }
+    send({ type: 'loading', message: PR_MESSAGE, detail: PR_DETAIL, steps: prSteps(active, detail) });
+    await sleep(active === 2 ? 900 : 650);
+    if (seq !== runSeq) return;
+  }
+  send({ type: 'loading', message: PR_MESSAGE, detail: PR_DETAIL, steps: prSteps(PR_STEP_LABELS.length, '') });
+  await sleep(400);
+  if (seq !== runSeq) return;
+  await sendLoad({ pr: true });
+}
+
+/** What Retry / Log in again / Re-run do: run the same kind of review again. */
+let lastRun: 'branch' | 'pr' = 'branch';
+function rerun(): void {
+  if (lastRun === 'pr') void simulatePrRun();
+  else void simulateRun();
 }
 
 // ---- simulated agent -----------------------------------------------------------------------------
@@ -374,7 +458,7 @@ function onWebviewMessage(msg: WebviewToHost): void {
   }
   switch (msg?.type) {
     case 'ready':
-      void sendLoad({ agent: source === 'agent' });
+      void sendLoad({ agent: source === 'agent', pr: prLoaded });
       break;
     case 'select': {
       // The real host opens code only when the model allows it (not into fog), and the model
@@ -389,8 +473,9 @@ function onWebviewMessage(msg: WebviewToHost): void {
       write(KEYS.view, hostView);
       break;
     case 'action':
+      runSeq++;
       if (msg.action === 'useFixture') void sendLoad();
-      else void simulateRun(); // login, retry, rerun: the real host re-runs the agent
+      else rerun(); // login, retry, rerun: the real host re-runs the agent
       break;
     default:
       break; // openAnchor / rendered: logged only (the real host opens code)
@@ -483,11 +568,26 @@ function wire(): void {
   const on = (id: string, fn: () => void) => document.getElementById(id)?.addEventListener('click', fn);
   for (const b of document.querySelectorAll<HTMLElement>('[data-theme]')) b.addEventListener('click', () => setTheme(b.dataset.theme!));
   for (const b of document.querySelectorAll<HTMLElement>('[data-width]')) b.addEventListener('click', () => setWidth(b.dataset.width ?? ''));
-  on('h-load', () => void sendLoad());
-  on('h-load-warn', () => void sendLoad({ warnings: true }));
-  on('h-load-agent', () => void sendLoad({ agent: true }));
-  on('h-loading', () => send({ type: 'loading', message: 'Asking claude to read the PR…', detail: 'Reading money/round.ts' }));
-  on('h-error', () =>
+  // A manual send stops a simulated run, so its next frame doesn't overwrite what was clicked.
+  const manual = (id: string, fn: () => void) =>
+    on(id, () => {
+      runSeq++;
+      fn();
+    });
+  manual('h-load', () => void sendLoad());
+  manual('h-load-warn', () => void sendLoad({ warnings: true }));
+  manual('h-load-agent', () => void sendLoad({ agent: true }));
+  manual('h-load-pr', () => void sendLoad({ pr: true }));
+  on('h-pr-run', () => {
+    lastRun = 'pr';
+    void simulatePrRun();
+  });
+  on('h-pr-fail', () => {
+    lastRun = 'pr';
+    void simulatePrRun(6);
+  });
+  manual('h-loading', () => send({ type: 'loading', message: 'Asking claude to read the PR…', detail: 'Reading money/round.ts' }));
+  manual('h-error', () =>
     send({
       type: 'error',
       message: 'The agent’s answer did not match the review-graph contract.',
@@ -495,7 +595,7 @@ function wire(): void {
       actions: ['retry', 'useFixture', 'login'],
     }),
   );
-  on('h-error-auth', () => send({ type: 'error', message: 'Your claude session has expired.', detail: 'Run "claude auth login" in a terminal, then try again.', actions: ['login', 'useFixture'] }));
+  manual('h-error-auth', () => send({ type: 'error', message: 'Your claude session has expired.', detail: 'Run "claude auth login" in a terminal, then try again.', actions: ['login', 'useFixture'] }));
   on('h-select', () => send({ type: 'select', id: (document.getElementById('h-select-id') as HTMLSelectElement).value }));
   on('h-log-clear', () => {
     log.length = 0;
@@ -566,6 +666,7 @@ function wire(): void {
 window.__filosHarness = {
   send,
   sendLoad,
+  simulatePrRun,
   setTheme,
   setWidth,
   sendReview,

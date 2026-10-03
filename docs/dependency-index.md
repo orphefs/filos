@@ -58,6 +58,7 @@ A **user-owned skill** builds it locally, by scanning this repo and whichever ot
 - `externalConsumers` = the number of distinct `repo` values among a symbol's consumers.
 - `internalFanOut` = the in-repo consumers of kind `call` (the entry point's re-exports are `import`).
 - Each external repo that consumes a changed symbol becomes an `external` node, with a `consumes` edge to that symbol.
+- **Pull requests** (**Review Pull Request…**): the index is read from where the pull request branched off (the merge base), never from its head, whose copy the PR's author can write (one that says a risky symbol has no consumers, say). A pull request that changes anything under `.filos/` gets a warning saying so.
 - The file is untrusted input, like agent output: it is validated on read, and a malformed index counts as absent, plus a warning.
 
 ## "Last built"

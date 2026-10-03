@@ -43,6 +43,9 @@ interface Call {
   cwd: string;
   mode: string;
   stdin?: string;
+  /** GH_HOST / GH_REPO as the fake gh saw them. */
+  ghHost?: string;
+  ghRepo?: string;
 }
 
 function calls(): Call[] {
@@ -229,7 +232,8 @@ describe('postReview (fake gh)', () => {
     assert.equal(res.id, 1001);
     const c = calls();
     assert.equal(c.length, 1);
-    assert.deepEqual(c[0].argv, ['api', '-X', 'POST', 'repos/acme/ledger/pulls/42/reviews', '--input', '-']);
+    // The host is always named: a GH_HOST in the environment can't send the review to another server.
+    assert.deepEqual(c[0].argv, ['api', '--hostname', 'github.com', '-X', 'POST', 'repos/acme/ledger/pulls/42/reviews', '--input', '-']);
     assert.deepEqual(JSON.parse(c[0].stdin ?? ''), {
       event: 'COMMENT',
       body: INLINE_ONLY_BODY,
@@ -352,5 +356,43 @@ describe('planning a post', () => {
     assert.throws(() => reviewRequest({ ...PR, owner: 'ac/me' }, { body: '', comments: [] }), GhError);
     assert.throws(() => reviewRequest({ ...PR, headRefOid: 'HEAD' }, { body: '', comments: [] }), GhError);
     assert.throws(() => reviewRequest({ ...PR, number: 1.5 }, { body: '', comments: [] }), GhError);
+  });
+});
+
+describe('a GH_HOST or GH_REPO in the environment (GitHub Enterprise users often export one)', () => {
+  const enterprise = { GH_HOST: 'ghe.corp.example', GH_REPO: 'mirror/ledger' };
+
+  it('never redirects a post: the host is named, and neither variable reaches gh', async () => {
+    const plan = planPost(PR, [comment({ file: 'src/money/round.ts', line: 18, body: 'Keep half-up?' })], sampleHeadLines(), { headOid: OID, base: 'main' });
+    assert.deepEqual(plan.request.args.slice(0, 3), ['api', '--hostname', 'github.com']);
+    await postReview(PR, plan.request, opts(enterprise));
+    const [c] = calls();
+    assert.deepEqual(c.argv.slice(0, 3), ['api', '--hostname', 'github.com']);
+    assert.equal(c.ghHost, undefined);
+    assert.equal(c.ghRepo, undefined);
+  });
+
+  it('never redirects the lookup by URL before a post', async () => {
+    const r = await detectPullRequest(opts(enterprise), PR);
+    assert.ok(r.ok);
+    const [c] = calls();
+    assert.equal(c.argv[2], 'https://github.com/acme/ledger/pull/42');
+    assert.equal(c.ghHost, undefined);
+    assert.equal(c.ghRepo, undefined);
+  });
+
+  it("a post from a checkout that is gone says so, not that gh can't be found", async () => {
+    const plan = planPost(PR, [comment({ body: 'x' })], sampleHeadLines(), { headOid: OID, base: 'main' });
+    await assert.rejects(postReview(PR, plan.request, opts({}, { cwd: join(scratch, 'gone') })), (e: unknown) => {
+      assert.ok(e instanceof GhError);
+      assert.match(e.message, /the folder it runs in is gone/);
+      assert.equal(e.uncertain, false, 'gh never ran: nothing can have been posted');
+      return true;
+    });
+  });
+
+  it("is left alone where the user's environment decides: the branch's own pull request", async () => {
+    await detectPullRequest(opts(enterprise));
+    assert.equal(calls()[0].ghHost, 'ghe.corp.example');
   });
 });

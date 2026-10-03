@@ -92,7 +92,7 @@ Each task has its own schema and validator, and each prompt treats the diff, cod
 
 ## Persistence
 
-- **Per PR** (`workspaceState`, same key as the view state): chosen depth, answers, comments, explored territories, familiarity answers, and the ids of posted (and maybe posted) comments.
+- **Per PR** (same key as the view state): chosen depth, answers, comments, explored territories, familiarity answers, and the ids of posted (and maybe posted) comments. A GitHub pull request reviewed with **Review Pull Request…** is kept in `globalState` under its URL, since it can be opened from any window, or with no folder open; a review stored per workspace before is moved there when the pull request is next opened. The current branch and the sample stay in `workspaceState`.
   - Each answer keeps a fingerprint of the question it answered. A re-run may reuse an id for a different question; the old answer, and the drafts it made that are still only drafts, are dropped.
   - Posted marks only grow: a save keeps the marks already stored for the same comments. A review that was closed or re-run while its post ran writes only its posted marks, so it never overwrites a newer review of the PR. An agent grading cancelled that way leaves the answer unanswered.
 - **Global** (`globalState`): mode (fast or didactic) and the confidence store.

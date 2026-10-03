@@ -3,7 +3,8 @@
 'use strict';
 
 const fs = require('node:fs');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
 
 const argv = process.argv.slice(2);
 const env = process.env;
@@ -29,7 +30,8 @@ const number = Number(env.FAKE_GH_PR_NUMBER || 42);
 function record(extra) {
   const file = env.FAKE_GH_RECORD;
   if (!file) return;
-  fs.appendFileSync(file, JSON.stringify({ argv, cwd: process.cwd(), mode, ...extra }) + '\n');
+  // GH_HOST / GH_REPO as gh would see them: they redirect calls that don't name their host.
+  fs.appendFileSync(file, JSON.stringify({ argv, cwd: process.cwd(), mode, ghHost: env.GH_HOST, ghRepo: env.GH_REPO, ...extra }) + '\n');
 }
 
 function out(obj) {
@@ -78,9 +80,55 @@ if (mode === 'slow') sleep(Number(env.FAKE_GH_DELAY_MS || 60000));
 
 const [cmd, sub] = argv;
 
+/** The value after --flag (or -f), if any. */
+function flag(...names) {
+  for (const n of names) {
+    const i = argv.indexOf(n);
+    if (i >= 0 && argv[i + 1] !== undefined) return argv[i + 1];
+  }
+  return undefined;
+}
+
+/** Pull requests from FAKE_GH_PR_JSON (one object or an array), or undefined when it isn't set. */
+function prFixture() {
+  const file = env.FAKE_GH_PR_JSON;
+  if (!file) return undefined;
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  return Array.isArray(raw) ? raw : [raw];
+}
+
+/** `pr view <url | n | #n> [--repo owner/repo]`: the number asked for, and the repository named, if any. */
+function viewSelector() {
+  const sel = argv[2] && !argv[2].startsWith('-') ? argv[2] : undefined;
+  if (!sel) return {};
+  const url = /^https:\/\/([^/]+)\/([^/]+)\/([^/]+)\/pull\/(\d+)$/.exec(sel);
+  if (url) return { number: Number(url[4]), repo: `${url[2]}/${url[3]}`, url: sel };
+  const n = /^#?(\d+)$/.exec(sel);
+  return n ? { number: Number(n[1]), repo: flag('--repo', '-R') } : { branch: sel };
+}
+
+function networkDown() {
+  fail(1, `error connecting to ${host === 'github.com' ? 'api.github.com' : host}\ncheck your internet connection or https://githubstatus.com`);
+}
+
+function sso() {
+  fail(1, 'GraphQL: Resource protected by organization SAML enforcement. You must grant your OAuth token access to this organization. (repository)');
+}
+
 if (cmd === '--version' || cmd === 'version') {
   process.stdout.write('gh version 0.0.0-fake (2026-10-03)\n');
   process.exit(0);
+}
+
+// An older gh: --json fields it doesn't know fail before anything else is asked (gh 2.45 has no baseRefOid).
+const unknownFields = (env.FAKE_GH_UNKNOWN_FIELDS || '').split(',').filter(Boolean);
+if (unknownFields.length && argv.includes('--json')) {
+  const asked = (argv[argv.indexOf('--json') + 1] || '').split(',');
+  const bad = asked.find((f) => unknownFields.includes(f));
+  if (bad) {
+    record({});
+    fail(1, `Unknown JSON field: "${bad}"\nAvailable fields:\n  additions\n  author\n  baseRefName\n  number`);
+  }
 }
 
 if (cmd === 'auth' && sub === 'status') {
@@ -88,6 +136,59 @@ if (cmd === 'auth' && sub === 'status') {
   if (mode === 'auth') fail(1, 'You are not logged into any GitHub hosts. To log in, run: gh auth login');
   process.stdout.write(`${host}\n  ✓ Logged in to ${host} account fake (keyring)\n`);
   process.exit(0);
+}
+
+if (cmd === 'pr' && sub === 'view' && prFixture()) {
+  // Fixture mode: answers from FAKE_GH_PR_JSON for the pull request asked for (by URL, number or #n).
+  record({});
+  const sel = viewSelector();
+  if (mode === 'auth') notLoggedIn();
+  if (mode === 'network') networkDown();
+  if (mode === 'sso') sso();
+  if (mode === 'noremote' && !sel.url && !sel.repo) fail(1, 'none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use `gh auth login`');
+  if (mode === 'noaccess') fail(1, `GraphQL: Could not resolve to a Repository with the name '${sel.repo || repo}'. (repository)`);
+  const pr = mode === 'notfound' ? undefined : prFixture().find((p) => p.number === sel.number);
+  if (!pr) fail(1, `GraphQL: Could not resolve to a PullRequest with the number of ${sel.number}. (repository.pullRequest)`);
+  out(pick(pr));
+  process.exit(0);
+}
+
+if (cmd === 'pr' && sub === 'list') {
+  // The open pull requests of FAKE_GH_PR_LIST (a JSON array) or, failing that, FAKE_GH_PR_JSON.
+  record({});
+  if (mode === 'auth') notLoggedIn();
+  if (mode === 'network') networkDown();
+  if (mode === 'noremote') fail(1, 'none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use `gh auth login`');
+  const list = env.FAKE_GH_PR_LIST ? JSON.parse(fs.readFileSync(env.FAKE_GH_PR_LIST, 'utf8')) : (prFixture() || []).filter((p) => (p.state || 'OPEN') === 'OPEN');
+  const limit = Number(flag('--limit', '-L') || 30);
+  out(list.slice(0, limit).map(pick));
+  process.exit(0);
+}
+
+if (cmd === 'repo' && sub === 'clone') {
+  // `repo clone [HOST/]OWNER/REPO <dir> [-- <git clone flags>]`: clones the LOCAL bare repo
+  // FAKE_GH_REMOTE (over file://, so --filter works) into <dir>, passing the flags after "--" on to
+  // git clone. Like gh, a name without a host means GH_HOST's (else github.com), and origin is that
+  // host's https URL; an insteadOf in the clone sends fetches from there to the local repo.
+  record({});
+  if (mode === 'auth') notLoggedIn();
+  if (mode === 'network') networkDown();
+  const dd = argv.indexOf('--');
+  const positional = (dd >= 0 ? argv.slice(2, dd) : argv.slice(2)).filter((a) => !a.startsWith('-'));
+  const [name, dir] = positional;
+  if (!name || !dir) fail(1, 'fake gh: repo clone needs <repo> <dir>');
+  const parts = name.split('/');
+  if (parts.length !== 2 && parts.length !== 3) fail(1, `fake gh: expected the "[HOST/]OWNER/REPO" format, got "${name}"`);
+  const [cloneHost, owner, repoName] = parts.length === 3 ? parts : [env.GH_HOST || 'github.com', ...parts];
+  if (mode === 'clonefail') fail(128, `Cloning into '${dir}'...\nremote: Repository not found.\nfatal: repository 'https://${cloneHost}/${owner}/${repoName}.git/' not found`);
+  if (!env.FAKE_GH_REMOTE) fail(1, 'fake gh: FAKE_GH_REMOTE (a local bare repository) is not set');
+  const extra = dd >= 0 ? argv.slice(dd + 1) : [];
+  const local = pathToFileURL(env.FAKE_GH_REMOTE).href;
+  const r = spawnSync('git', ['clone', '--quiet', ...extra, local, dir], { stdio: ['ignore', 'ignore', 'inherit'] });
+  if (r.status !== 0) process.exit(r.status === null ? 1 : r.status);
+  const origin = `https://${cloneHost}/${owner}/${repoName}.git`;
+  const config = (k, v) => spawnSync('git', ['-C', dir, '-c', 'core.hooksPath=/dev/null', 'config', k, v], { stdio: ['ignore', 'ignore', 'inherit'] }).status;
+  process.exit(config('remote.origin.url', origin) || config(`url.${local}.insteadOf`, origin) || 0);
 }
 
 if (cmd === 'pr' && sub === 'view') {

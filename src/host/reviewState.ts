@@ -164,6 +164,13 @@ export class ReviewState implements vscode.Disposable {
 
   private initialPostTarget(): PostTarget {
     if (this.session.target.kind === 'sample') return { kind: 'none', reason: SAMPLE_POST_REASON };
+    const known = this.session.knownPullRequest;
+    if (known) {
+      // A pull request review: the PR was looked up to start it, so the target is known now.
+      const target = postTargetOf(known);
+      this.pr = known.ok && target.kind === 'github' ? known.pr : undefined;
+      return target;
+    }
     return { kind: 'none', reason: this.session.pullRequest ? LOOKING_UP_REASON : 'Filos has no pull request for this review. Use Export instead.' };
   }
 

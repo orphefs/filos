@@ -5,23 +5,26 @@ import { join, normalize } from 'node:path';
 import * as vscode from 'vscode';
 import type { Anchor, FileOutline, GraphNode, ReviewGraph } from '../contract/graph';
 import { scoreGraph, type RiskScore } from '../contract/risk';
-import type { ErrorAction, GraphSource, HostToWebview, ViewState } from '../protocol';
+import type { ErrorAction, GraphSource, HostToWebview, LoadingStep, ViewState } from '../protocol';
 import { mergePostedMarks, parsePersistedReview, type PersistedReview } from '../review/model';
 import type { PullRequestLookup } from './github';
 
 export interface ReviewTarget {
-  kind: 'sample' | 'branch';
+  /** sample: the bundled example; branch: the workspace's branch; pr: a GitHub pull request in Filos's own checkout. */
+  kind: 'sample' | 'branch' | 'pr';
   /** Absolute, real path of the repo with the head revision checked out. Files open from here. */
   repoRoot: string;
   base: string;
   head: string;
   prTitle: string;
+  /** Pull request reviews: which one. Its URL keys the stored review, whatever commit is checked out. */
+  pr?: { url: string; host: string; owner: string; repo: string; number: number };
 }
 
 export type SessionStatus =
-  | { kind: 'loading'; message: string; detail?: string }
+  | { kind: 'loading'; message: string; detail?: string; steps?: LoadingStep[] }
   | { kind: 'loaded' }
-  | { kind: 'error'; message: string; detail?: string; actions: ErrorAction[] };
+  | { kind: 'error'; message: string; detail?: string; actions: ErrorAction[]; steps?: LoadingStep[] };
 
 /** What the webview last said it rendered (kept for tests and for "what can the user see"). */
 export interface RenderedInfo {
@@ -32,6 +35,42 @@ export interface RenderedInfo {
 }
 
 const EMPTY_STATE: ViewState = { expanded: [], visited: [] };
+
+/**
+ * How a review's files are addressed in the editor: file: URIs for the sample and the workspace's
+ * branch; filos-pr: (prFiles.ts, read-only) for a pull request's checkout, so other extensions
+ * never take it for an on-disk project.
+ */
+export interface CodeLocation {
+  /** The URI for an absolute path in the repo, or undefined when it can't be served. */
+  uri(absPath: string): vscode.Uri | undefined;
+  /** The absolute path a URI stands for, or undefined for URIs of another kind. */
+  path(uri: vscode.Uri): string | undefined;
+}
+
+export const FILE_LOCATION: CodeLocation = {
+  uri: (p) => vscode.Uri.file(p),
+  path: (u) => (u.scheme === 'file' ? u.fsPath : undefined),
+};
+
+/** The keys a review is stored under (view state, and answers/comments/progress). */
+export function storedKeys(key: string): string[] {
+  return [`filos.viewState:${key}`, `filos.review:${key}`];
+}
+
+/**
+ * Moves what was stored for review `key` from `from` to `to`, unless `to` has it already. Pull
+ * request reviews were kept per workspace; they are global now, since the same PR can be opened
+ * from any window (or none).
+ */
+export function migrateStored(key: string, from: vscode.Memento, to: vscode.Memento): void {
+  for (const k of storedKeys(key)) {
+    const old = from.get<unknown>(k);
+    if (old === undefined) continue;
+    if (to.get<unknown>(k) === undefined) void to.update(k, old);
+    void from.update(k, undefined);
+  }
+}
 
 /** Case-insensitive file systems need case-insensitive lookups. */
 export function fileKey(fsPath: string): string {
@@ -59,6 +98,8 @@ export class ReviewSession {
   repoKey: string;
   /** Branch reviews: the pull request lookup, started with the session (gh is slow). */
   pullRequest?: Promise<PullRequestLookup>;
+  /** Pull request reviews: the pull request, already looked up (it is where the review was started from). */
+  knownPullRequest?: PullRequestLookup;
 
   private nodes = new Map<string, GraphNode>();
   private children = new Map<string, GraphNode[]>();
@@ -68,14 +109,24 @@ export class ReviewSession {
     readonly target: ReviewTarget,
     private readonly store: vscode.Memento,
     repoKey?: string,
+    private readonly code: CodeLocation = FILE_LOCATION,
   ) {
     this.state = store.get<ViewState>(this.storeKey) ?? EMPTY_STATE;
     this.repoKey = repoKey ?? target.repoRoot;
   }
 
-  /** Identifies the PR: same repo and range means the same review, so view state carries over. */
+  /**
+   * Identifies the PR: same repo and range means the same review, so view state carries over. A
+   * pull request is itself, by URL, at any commit: a re-run after the author pushed keeps the answers
+   * and comments (comments on the earlier commit are posted in the review body, see planPost).
+   */
   get key(): string {
-    return `${this.target.repoRoot}\u0000${this.target.base}...${this.target.head}`;
+    return ReviewSession.keyFor(this.target);
+  }
+
+  static keyFor(target: ReviewTarget): string {
+    if (target.kind === 'pr' && target.pr) return `pr\u0000${target.pr.url.toLowerCase()}`;
+    return `${target.repoRoot}\u0000${target.base}...${target.head}`;
   }
 
   private get storeKey(): string {
@@ -106,12 +157,12 @@ export class ReviewSession {
     return this.store.update(this.reviewKey, current ? mergePostedMarks(current, review) : review);
   }
 
-  setLoading(message: string, detail?: string): void {
-    this.status = { kind: 'loading', message, detail };
+  setLoading(message: string, detail?: string, steps?: LoadingStep[]): void {
+    this.status = { kind: 'loading', message, detail, ...(steps ? { steps } : {}) };
   }
 
-  setError(message: string, actions: ErrorAction[], detail?: string): void {
-    this.status = { kind: 'error', message, detail, actions };
+  setError(message: string, actions: ErrorAction[], detail?: string, steps?: LoadingStep[]): void {
+    this.status = { kind: 'error', message, detail, actions, ...(steps ? { steps } : {}) };
   }
 
   load(graph: ReviewGraph, source: GraphSource, warnings: string[]): void {
@@ -154,8 +205,8 @@ export class ReviewSession {
   /** The message that brings a freshly (re)loaded webview up to date. */
   snapshot(): HostToWebview {
     const s = this.status;
-    if (s.kind === 'loading') return { type: 'loading', message: s.message, detail: s.detail };
-    if (s.kind === 'error') return { type: 'error', message: s.message, detail: s.detail, actions: s.actions };
+    if (s.kind === 'loading') return { type: 'loading', message: s.message, detail: s.detail, ...(s.steps ? { steps: s.steps } : {}) };
+    if (s.kind === 'error') return { type: 'error', message: s.message, detail: s.detail, actions: s.actions, ...(s.steps ? { steps: s.steps } : {}) };
     return { type: 'load', graph: this.graph!, source: this.source!, state: this.state, warnings: this.warnings };
   }
 
@@ -189,11 +240,13 @@ export class ReviewSession {
     return join(this.target.repoRoot, ...relPath.split('/'));
   }
 
-  uriFor(relPath: string): vscode.Uri {
-    return vscode.Uri.file(this.absPath(relPath));
+  /** The editor URI for a repo-relative path (filos-pr: for a pull request), or undefined when it can't be served. */
+  uriFor(relPath: string): vscode.Uri | undefined {
+    return this.code.uri(this.absPath(relPath));
   }
 
   outlineFor(uri: vscode.Uri): FileOutline | undefined {
-    return uri.scheme === 'file' ? this.outlines.get(fileKey(uri.fsPath)) : undefined;
+    const p = this.code.path(uri);
+    return p === undefined ? undefined : this.outlines.get(fileKey(p));
   }
 }

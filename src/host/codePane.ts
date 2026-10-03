@@ -180,7 +180,7 @@ export class CodePane implements vscode.Disposable {
     const primary = anchors[Math.max(0, Math.min(anchorIndex ?? 0, anchors.length - 1))];
     const relevant = anchors.filter((a) => a.file === primary.file);
     const uri = session.uriFor(primary.file);
-    if (!existsSync(uri.fsPath)) {
+    if (!uri || !existsSync(session.absPath(primary.file))) {
       this.host.log.warn(`select ${nodeId}: ${primary.file} does not exist in ${session.target.repoRoot}`);
       // The path comes from the agent, and notifications turn [label](command:…) into a link that
       // runs a command: show it without link syntax.

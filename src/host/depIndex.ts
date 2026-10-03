@@ -4,6 +4,7 @@
 
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import { join, sep } from 'node:path';
+import { diffStats } from '../agent/prompt';
 
 export const DEP_INDEX = join('.filos', 'dependency-index.json');
 export const MAX_DEP_INDEX_BYTES = 5 * 1024 * 1024;
@@ -34,6 +35,15 @@ export function readDependencyIndex(root: string): DependencyIndexRead {
   } catch (e) {
     return ignored(`${DEP_INDEX} could not be read (${e instanceof Error ? e.message : String(e)}).`);
   }
+}
+
+/**
+ * Whether a diff adds, changes, removes or renames anything under .filos/, where the index lives.
+ * A pull request that does is reviewed with the index from where it branched off, and says so.
+ */
+export function diffTouchesIndex(diff: string): boolean {
+  const filos = (p?: string) => !!p && (p === '.filos' || p.startsWith('.filos/'));
+  return diffStats(diff).some((f) => filos(f.path) || filos(f.oldPath));
 }
 
 function lstatOrUndefined(p: string) {

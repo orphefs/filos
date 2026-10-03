@@ -217,8 +217,11 @@ describe('prompt', () => {
     assert.match(p.user, /\n-----BEGIN PR TITLE-----\nUse bankers rounding\n-----END PR TITLE-----\n/);
     assert.ok(!/PR title:/.test(p.user), 'no unfenced title line');
     assert.match(p.user, /- money\/round.ts \(modified, \+10 -2\)/);
-    assert.match(p.user, /-----BEGIN DEPENDENCY INDEX-----\n# Dependency index/);
-    assert.ok(p.user.includes('-----BEGIN DIFF-----\n' + FAKE_DIFF));
+    // Both blocks carry the call's random fence id, so text in them can't fake their end.
+    const id = /-----BEGIN DEPENDENCY INDEX ([0-9a-f]{12})-----\n# Dependency index/.exec(p.user)?.[1];
+    assert.ok(id, 'the index is fenced with an id');
+    assert.ok(p.user.includes(`-----END DEPENDENCY INDEX ${id}-----`));
+    assert.ok(p.user.includes(`-----BEGIN DIFF ${id}-----\n` + FAKE_DIFF + `\n-----END DIFF ${id}-----`));
     assert.deepEqual(p.warnings, []);
   });
 

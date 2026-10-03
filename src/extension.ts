@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { PR_SCHEME, registerPullRequestFiles } from './host/prFiles';
 import { ReviewController, type BranchReviewOptions } from './host/review';
 import { createTestApi, type FilosTestApi } from './host/testApi';
 
@@ -25,7 +26,13 @@ export function activate(context: vscode.ExtensionContext): FilosApi {
   context.subscriptions.push(
     log,
     controller,
-    vscode.languages.registerFoldingRangeProvider({ scheme: 'file' }, controller.folding),
+    // Pull request code opens read-only as filos-pr: (never file:, so no other extension takes the
+    // PR's checkout for a project of the user's and runs its code); it folds like any other file.
+    registerPullRequestFiles(() => controller.pullRequestStorage),
+    vscode.languages.registerFoldingRangeProvider([{ scheme: 'file' }, { scheme: PR_SCHEME }], controller.folding),
+    // A GitHub pull request, by URL, owner/repo#n or number (an optional string argument), or picked.
+    command('filos.reviewPullRequest', (arg?: unknown) => controller.reviewPullRequest(arg)),
+    command('filos.cleanPullRequestCheckouts', () => controller.cleanPullRequestCheckouts()),
     command('filos.reviewSample', () => controller.reviewSample()),
     command('filos.reviewSampleWithAgent', () => controller.reviewSampleWithAgent()),
     command('filos.reviewCurrentBranch', (arg?: unknown) => controller.reviewCurrentBranch(branchOptions(arg))),

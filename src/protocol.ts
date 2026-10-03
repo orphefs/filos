@@ -14,10 +14,18 @@ export interface ViewState {
   visited: string[];
 }
 
+/** One step of a long review start (fetch PR, prepare code, comprehension pass, questions). */
+export interface LoadingStep {
+  label: string;
+  state: 'done' | 'active' | 'pending' | 'failed';
+  /** Short, sanitised detail, e.g. "#9 · 14 files · +440 −176" or the agent's live progress. */
+  detail?: string;
+}
+
 export type HostToWebview =
-  | { type: 'loading'; message: string; detail?: string }
+  | { type: 'loading'; message: string; detail?: string; steps?: LoadingStep[] }
   | { type: 'load'; graph: ReviewGraph; source: GraphSource; state: ViewState; warnings: string[] }
-  | { type: 'error'; message: string; detail?: string; actions: ErrorAction[] }
+  | { type: 'error'; message: string; detail?: string; actions: ErrorAction[]; steps?: LoadingStep[] }
   /** Host-driven selection, e.g. from a test or a command. */
   | { type: 'select'; id: string }
   /** Full questionnaire/comments/didactic state; sent after 'load' and after every change. */

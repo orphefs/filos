@@ -9,6 +9,7 @@ import { registerBranchTests } from './branch.test';
 import { registerClickTests } from './clicks.test';
 import { registerDidacticTests } from './didactic.test';
 import { cdpPort, filos, shot, workbench } from './helpers';
+import { registerPullRequestTests } from './pr.test';
 import { registerReviewTests } from './review.test';
 import { registerSampleTests } from './sample.test';
 
@@ -45,6 +46,10 @@ export async function run(): Promise<void> {
   // the stored review state it starts from, and leaves the mode on fast.
   registerReviewTests();
   registerDidacticTests();
+  // The whole pull request flow, from pointing Filos at it to posting, against a local stand-in for
+  // GitHub. Last: it adds a remote to the workspace while it runs and switches the fake gh to answer
+  // from a pull request fixture.
+  registerPullRequestTests();
 
   const failures = await new Promise<number>((resolve) => mocha.run(resolve));
   if (failures > 0) throw new Error(`${failures} e2e test${failures === 1 ? '' : 's'} failed`);

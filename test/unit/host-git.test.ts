@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -118,5 +118,64 @@ describe('git.diff on a real repo', () => {
     sh(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/develop');
     const names = await git.branches(repo);
     assert.deepEqual([...names].sort(), ['main', 'origin/develop', 'pr']);
+  });
+});
+
+describe('git.git stops everything git started', { skip: process.platform === 'win32' }, () => {
+  // A shell alias stands in for what git starts itself: in a blobless clone, `worktree add`, `diff`
+  // and `cat-file` start a `git fetch` for missing blobs. Killing git alone left that one running.
+  const pidOf = async (file: string) => {
+    const end = Date.now() + 5000;
+    while (!existsSync(file) || !readFileSync(file, 'utf8').trim()) {
+      if (Date.now() > end) throw new Error('the child never started');
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return Number(readFileSync(file, 'utf8').trim());
+  };
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const gone = async (pid: number) => {
+    const end = Date.now() + 5000;
+    while (alive(pid)) {
+      if (Date.now() > end) return false;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    return true;
+  };
+  const spawner = (file: string) => ['-c', `alias.spawn=!sleep 60 & echo $! > '${file}'; wait`];
+
+  it('when cancelled', async () => {
+    const file = join(scratch, 'child-cancel.pid');
+    const abort = new AbortController();
+    const running = git.git(scratch, ['spawn'], { config: spawner(file), signal: abort.signal });
+    const child = await pidOf(file);
+    abort.abort();
+    await assert.rejects(running, (e: unknown) => e instanceof git.GitError && e.code === git.ABORTED);
+    assert.ok(await gone(child), `the child git started (${child}) is still running`);
+  });
+
+  it('when timed out', async () => {
+    const file = join(scratch, 'child-timeout.pid');
+    const running = git.git(scratch, ['spawn'], { config: spawner(file), timeoutMs: 300 });
+    const child = await pidOf(file);
+    await assert.rejects(running, (e: unknown) => e instanceof git.GitError && e.code === git.TIMED_OUT);
+    assert.ok(await gone(child), `the child git started (${child}) is still running`);
+  });
+
+  it('collects large output whole, and stops at maxBuffer', async () => {
+    const big = ['-c', `alias.big=!head -c 3000000 /dev/zero | tr '\\0' a`];
+    const out = await git.git(scratch, ['big'], { config: big });
+    assert.equal(out.length, 3_000_000, 'one long line, whole');
+    await assert.rejects(git.git(scratch, ['big'], { config: big, maxBuffer: 1000 }), (e: unknown) => e instanceof git.GitError && e.code === git.OUTPUT_TOO_LARGE);
+  });
+
+  it('reports a failing command with its exit code and stderr', async () => {
+    await assert.rejects(git.git(scratch, ['rev-parse', '--verify', 'no-such-ref']), (e: unknown) => e instanceof git.GitError && e.code === 128 && /fatal/.test(e.stderr));
   });
 });

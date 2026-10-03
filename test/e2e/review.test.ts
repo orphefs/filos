@@ -497,7 +497,8 @@ export function registerReviewTests(): void {
       await openTab(wb, 'comments');
       assert.match(await textOf(wb, '.post-box .post-target'), /^To pull request #42 in acme\/ledger/);
       const post = keySel('post:go');
-      assert.equal(await textOf(wb, post), 'Post 0 accepted comments');
+      // The button names where the review goes, as the confirmation does.
+      assert.equal(await textOf(wb, post), 'Post 0 accepted comments to acme/ledger#42');
       assert.ok(await isDisabled(wb, post), 'Post should be disabled with nothing accepted');
       // Clicking it anyway does nothing: no confirmation, no gh call.
       await wb.clickWebview(post);
@@ -520,7 +521,7 @@ export function registerReviewTests(): void {
       await snapshotWhere((x) => x.comments[0]?.status === 'accepted', 'the comment accepted');
       const post = keySel('post:go');
       await wb.waitForWebview<boolean>(
-        `(d, w, f, sel) => { const b = d.querySelector(sel); return !!b && b.getAttribute('aria-disabled') !== 'true' && b.textContent === 'Post 1 accepted comment'; }`,
+        `(d, w, f, sel) => { const b = d.querySelector(sel); return !!b && b.getAttribute('aria-disabled') !== 'true' && b.textContent === 'Post 1 accepted comment to acme/ledger#42'; }`,
         'Post to be enabled',
         5_000,
         post,
@@ -547,7 +548,8 @@ export function registerReviewTests(): void {
       assert.equal(s.post.url, 'https://github.com/acme/ledger/pull/42#pullrequestreview-1001');
       const sent = apiCalls();
       assert.equal(sent.length, 1);
-      assert.deepEqual(sent[0].argv, ['api', '-X', 'POST', 'repos/acme/ledger/pulls/42/reviews', '--input', '-']);
+      // The host is always named, so a GH_HOST in the environment can't send the review elsewhere.
+      assert.deepEqual(sent[0].argv, ['api', '--hostname', 'github.com', '-X', 'POST', 'repos/acme/ledger/pulls/42/reviews', '--input', '-']);
       assert.equal(sent[0].cwd, workspace);
       const payload = JSON.parse(sent[0].stdin ?? '{}') as { event: string; body: string; commit_id: string; comments: { path: string; line: number; side: string; body: string }[] };
       const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace, encoding: 'utf8' }).trim();

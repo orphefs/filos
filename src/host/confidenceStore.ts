@@ -19,7 +19,10 @@ export function globalConfidenceStore(state: Pick<Memento, 'get' | 'update'>, re
   };
 }
 
-/** "sample:@acme/ledger" for the sample; else the normalised origin URL, or the repo root. */
-export function repoKeyFor(kind: 'sample' | 'branch', repoRoot: string, originUrl?: string): string {
+/**
+ * "sample:@acme/ledger" for the sample; else the normalised origin URL, or the repo root. A pull
+ * request passes its repository's URL, so it shares confidence with branch reviews of a clone.
+ */
+export function repoKeyFor(kind: 'sample' | 'branch' | 'pr', repoRoot: string, originUrl?: string): string {
   return kind === 'sample' ? confidenceRepoKey({ sample: SAMPLE_PACKAGE, repoRoot }) : confidenceRepoKey({ originUrl, repoRoot });
 }

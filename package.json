@@ -23,6 +23,11 @@
   "contributes": {
     "commands": [
       {
+        "command": "filos.reviewPullRequest",
+        "title": "Review Pull Request\u2026",
+        "category": "Filos"
+      },
+      {
         "command": "filos.reviewSample",
         "title": "Review Sample PR (bundled example)",
         "category": "Filos"
@@ -40,6 +45,11 @@
       {
         "command": "filos.reviewCurrentBranchAgainst",
         "title": "Review Current Branch Against\u2026",
+        "category": "Filos"
+      },
+      {
+        "command": "filos.cleanPullRequestCheckouts",
+        "title": "Delete Pull Request Checkouts",
         "category": "Filos"
       }
     ],
@@ -122,7 +132,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "The bundled sample works anywhere. Reviewing the current branch runs git and the agent CLI in the folder, so it needs a trusted workspace.",
+      "description": "The bundled sample works anywhere, and so does reviewing a pull request by its URL: its code goes into Filos's own storage. Reviewing the current branch, or listing the workspace repository's pull requests, runs git and gh in the folder, so it needs a trusted workspace.",
       "restrictedConfigurations": [
         "filos.claude.path",
         "filos.claude.model",

@@ -131,6 +131,17 @@ body {
   color: var(--filos-muted);
   font-size: 12px;
 }
+.pr-ref {
+  font-weight: 600;
+  color: var(--filos-fg);
+}
+.pr-url {
+  margin: 2px 0 0;
+  font-family: var(--filos-code-font);
+  font-size: 11px;
+  color: var(--filos-muted);
+  overflow-wrap: anywhere;
+}
 .pr-meta code {
   font-family: var(--filos-code-font);
   font-size: 11.5px;
@@ -1128,6 +1139,129 @@ body {
   justify-content: center;
   gap: 8px;
   margin-top: 16px;
+}
+
+/* ---- loading steps: a checklist that updates in place ------------------------------------- */
+
+.status--steps {
+  width: min(100%, 460px);
+  text-align: left;
+}
+.status--steps > .status-message {
+  margin: 0 0 2px;
+}
+.status--steps > .status-detail {
+  overflow-wrap: anywhere;
+}
+.lsteps {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+.lstep {
+  position: relative;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: start;
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+/* The thread from one step to the next. */
+.lstep:not(:last-child)::before {
+  content: '';
+  position: absolute;
+  left: 17px;
+  top: 29px;
+  bottom: -7px;
+  width: 2px;
+  background: var(--filos-border);
+}
+.lstep--done:not(:last-child)::before {
+  background: color-mix(in srgb, var(--filos-ok) 55%, transparent);
+}
+.lstep-icon {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  background: var(--filos-bg);
+}
+.lstep--done .lstep-icon {
+  color: var(--filos-ok);
+  border: 1.5px solid currentColor;
+}
+.lstep--pending .lstep-icon::before {
+  content: '';
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--filos-muted);
+}
+.lstep--failed .lstep-icon {
+  color: var(--vscode-editorError-foreground, var(--filos-risk));
+  border: 1.5px solid currentColor;
+}
+.lstep--active {
+  background: color-mix(in srgb, var(--filos-focus) 9%, transparent);
+}
+.lstep--failed {
+  background: color-mix(in srgb, var(--vscode-editorError-foreground, var(--filos-risk)) 8%, transparent);
+}
+.lstep-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-top: 1px;
+}
+.lstep-label {
+  color: var(--filos-fg);
+}
+.lstep--active .lstep-label,
+.lstep--failed .lstep-label {
+  font-weight: 600;
+  color: var(--filos-ink);
+}
+.lstep--pending .lstep-label {
+  color: var(--filos-muted);
+}
+.lstep-detail {
+  font-size: 12px;
+  color: var(--filos-muted);
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.lstep--failed .lstep-detail,
+.lstep--active .lstep-detail {
+  color: var(--filos-fg);
+}
+/* An error after steps: the message sits under the list, left-aligned with it. */
+.status--steps .status-alert {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+}
+.status--steps .status-alert .status-icon {
+  flex: none;
+  margin: 0;
+  width: 26px;
+  height: 26px;
+}
+.status--steps .status-alert .status-message {
+  margin: 0;
+}
+.status--steps .status-details summary {
+  text-align: left;
+}
+.status--steps .status-actions {
+  justify-content: flex-start;
 }
 
 /* ---- high contrast: borders over fills ---------------------------------------------------- */

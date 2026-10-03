@@ -3,6 +3,7 @@
 // array (no shell), and every value that ends up in an API path is checked against a strict pattern
 // first. No vscode import, so unit tests drive it with the fake gh in test/fixtures/fake-gh.
 
+import { statSync } from 'node:fs';
 import { runProcess, type RunResult } from '../agent/exec';
 import { safeProgressText } from '../agent/progress';
 import { buildGithubReview, type GithubReview, type GithubReviewComment } from '../review/github';
@@ -64,22 +65,33 @@ const VIEW_TIMEOUT_MS = 30_000;
  */
 const POST_TIMEOUT_MS = 600_000;
 
-const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
-const REPO = /^[A-Za-z0-9._-]{1,100}$/;
-const HOST = /^[a-z0-9](?:[a-z0-9.-]{0,252})(?::\d{1,5})?$/;
-const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+/** What GitHub allows in an owner (user or organisation) name, a repository name and a host. */
+export const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+export const REPO = /^[A-Za-z0-9._-]{1,100}$/;
+export const HOST = /^[a-z0-9](?:[a-z0-9.-]{0,252})(?::\d{1,5})?$/;
+export const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
-/** gh quietly: no prompts, no update checks, no colour; git under it never asks for a password. */
-function ghEnv(env: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
-  return { ...(env ?? process.env), GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', GH_SPINNER_DISABLED: '1', NO_COLOR: '1', CLICOLOR: '0', GIT_TERMINAL_PROMPT: '0' };
+/**
+ * gh quietly: no prompts, no update checks, no colour; git under it never asks for a password.
+ * `explicit`: the call names its host and repository itself (a URL, --hostname, host/owner/repo),
+ * so a GH_HOST or GH_REPO the user's shell exports for another server (GitHub Enterprise users
+ * often have one) can't send it elsewhere.
+ */
+export function ghEnv(env: NodeJS.ProcessEnv | undefined, opts: { explicit?: boolean } = {}): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...(env ?? process.env), GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', GH_SPINNER_DISABLED: '1', NO_COLOR: '1', CLICOLOR: '0', GIT_TERMINAL_PROMPT: '0' };
+  if (opts.explicit) {
+    delete out.GH_HOST;
+    delete out.GH_REPO;
+  }
+  return out;
 }
 
-async function gh(o: GhOptions, args: readonly string[], stdin?: string, timeoutMs = VIEW_TIMEOUT_MS): Promise<RunResult> {
-  return runProcess({
+async function gh(o: GhOptions, args: readonly string[], stdin?: string, timeoutMs = VIEW_TIMEOUT_MS, explicit = false): Promise<RunResult> {
+  const r = await runProcess({
     command: o.gh,
     args,
     cwd: o.cwd,
-    env: ghEnv(o.env),
+    env: ghEnv(o.env, { explicit }),
     stdin,
     signal: o.signal,
     timeoutMs: o.timeoutMs ?? timeoutMs,
@@ -87,6 +99,19 @@ async function gh(o: GhOptions, args: readonly string[], stdin?: string, timeout
     maxCollectBytes: 1024 * 1024,
     maxStdoutBytes: 8 * 1024 * 1024,
   });
+  // A missing cwd fails to spawn with ENOENT too, which would read as "can't find the GitHub CLI".
+  if (r.spawnError?.code === 'ENOENT' && !isDirectory(o.cwd)) {
+    r.spawnError = Object.assign(new Error(`the folder it runs in is gone (${o.cwd}). Review the pull request again`), { code: 'ENOTDIR' });
+  }
+  return r;
+}
+
+function isDirectory(p: string): boolean {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /** Turns a failed run into a GhError. `what` names the step, e.g. "looking up the pull request". */
@@ -211,7 +236,8 @@ export async function detectPullRequest(o: GhOptions, known?: Pick<PullRequest, 
       if (!back || !samePullRequest(back, known)) return { ok: false, reason: 'The pull request details look wrong, so Filos stopped before posting.' };
       selector = [url];
     }
-    const view = await gh(o, ['pr', 'view', ...selector, '--json', PR_VIEW_FIELDS]);
+    // By URL, the host is in the call itself: GH_HOST/GH_REPO from the environment can't redirect it.
+    const view = await gh(o, ['pr', 'view', ...selector, '--json', PR_VIEW_FIELDS], undefined, VIEW_TIMEOUT_MS, !!known);
     if (view.exitCode !== 0 || view.spawnError || view.aborted || view.timedOut) throw ghFailure(view, 'looking up the pull request', o.gh, o.timeoutMs);
     const raw = parseJson(view.stdout);
     let pr = pullRequestFromView(raw);
@@ -234,7 +260,7 @@ export function postTargetOf(lookup: PullRequestLookup): PostTarget {
   const pr = lookup.pr;
   if (pr.state !== 'OPEN') {
     const what = pr.state === 'MERGED' ? 'is merged' : pr.state === 'CLOSED' ? 'is closed' : "isn't known to be open";
-    return { kind: 'none', reason: `The branch's pull request (${pr.owner}/${pr.repo}#${pr.number}) ${what}, so Filos won't post to it. Use Export instead.` };
+    return { kind: 'none', reason: `The pull request (${pr.owner}/${pr.repo}#${pr.number}) ${what}, so Filos won't post to it. Use Export instead.` };
   }
   return { kind: 'github', repo: `${pr.owner}/${pr.repo}`, number: pr.number, url: pr.url };
 }
@@ -256,12 +282,16 @@ export interface ReviewRequest {
   payload: ReviewPayload;
 }
 
-/** gh api arguments and the JSON for stdin. The path parts were checked when the PR was read. */
+/**
+ * gh api arguments and the JSON for stdin. The path parts were checked when the PR was read. The
+ * host is always named, github.com included: without --hostname, gh posts to GH_HOST when the
+ * environment sets one, i.e. to another server than the one the confirmation names.
+ */
 export function reviewRequest(pr: PullRequest, review: GithubReview): ReviewRequest {
   if (!OWNER.test(pr.owner) || !REPO.test(pr.repo) || !Number.isInteger(pr.number) || pr.number < 1 || !OID.test(pr.headRefOid) || !HOST.test(pr.host)) {
     throw new GhError('The pull request details look wrong, so Filos stopped before posting.', 'failed');
   }
-  const args = ['api', ...(pr.host === 'github.com' ? [] : ['--hostname', pr.host]), '-X', 'POST', `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`, '--input', '-'];
+  const args = ['api', '--hostname', pr.host, '-X', 'POST', `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`, '--input', '-'];
   return { args, payload: { event: 'COMMENT', body: review.body.trim() ? review.body : INLINE_ONLY_BODY, comments: review.comments, commit_id: pr.headRefOid } };
 }
 
@@ -341,7 +371,7 @@ export interface PostResult {
  * `uncertain` unless gh never ran or GitHub plainly refused the request (a 4xx, a login problem).
  */
 export async function postReview(pr: PullRequest, request: ReviewRequest, o: GhOptions): Promise<PostResult> {
-  const r = await gh(o, request.args, JSON.stringify(request.payload), POST_TIMEOUT_MS);
+  const r = await gh(o, request.args, JSON.stringify(request.payload), POST_TIMEOUT_MS, true);
   if (r.exitCode !== 0 || r.spawnError || r.aborted || r.timedOut) {
     const e = ghFailure(r, 'posting the review', o.gh, o.timeoutMs ?? POST_TIMEOUT_MS);
     const status = /\(HTTP (\d{3})\)/.exec(r.stderrTail)?.[1];

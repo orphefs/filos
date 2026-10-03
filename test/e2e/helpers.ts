@@ -105,10 +105,13 @@ export function expectedFolds(file: string, relevant: Anchor[]): Region[] {
 
 // ---- editors ----------------------------------------------------------------------------------
 
-/** The visible text editor showing `relPath` (repo-relative, forward slashes), if any. */
+/**
+ * The visible text editor showing `relPath` (repo-relative, forward slashes), if any: a file: editor
+ * (sample, branch), or a filos-pr: one (a pull request's code, read-only).
+ */
 export function editorFor(relPath: string): vscode.TextEditor | undefined {
   const tail = sep + relPath.split('/').join(sep);
-  return vscode.window.visibleTextEditors.find((e) => e.document.uri.scheme === 'file' && e.document.uri.fsPath.endsWith(tail));
+  return vscode.window.visibleTextEditors.find((e) => (e.document.uri.scheme === 'file' || e.document.uri.scheme === 'filos-pr') && e.document.uri.fsPath.endsWith(tail));
 }
 
 export function isLineVisible(editor: vscode.TextEditor, line1: number): boolean {

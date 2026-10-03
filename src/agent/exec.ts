@@ -15,12 +15,12 @@ export interface RunOptions {
   stdin?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
-  /** Called for each complete stdout line, without the line break. */
+  /** Called for each complete stdout line, without the line break. Without it, stdout isn't split into lines. */
   onLine?: (line: string) => void;
   /** Keep a copy of stdout (up to maxCollectBytes) in the result. */
   collectStdout?: boolean;
   maxCollectBytes?: number;
-  /** Kill the process if a single unterminated stdout line grows beyond this. */
+  /** Kill the process if a single unterminated stdout line grows beyond this (only with onLine). */
   maxLineBytes?: number;
   /** Kill the process if total stdout exceeds this: a runaway, not a real answer. */
   maxStdoutBytes?: number;
@@ -168,7 +168,9 @@ export function runProcess(o: RunOptions): Promise<RunResult> {
         result.stdout += text;
         collected += chunk.length;
       }
-      emitLines(text);
+      // Lines are only worth splitting for a listener; a caller that only collects (git's output,
+      // which can be one huge line) would otherwise pay for re-measuring the pending line per chunk.
+      if (o.onLine) emitLines(text);
     });
     child.stderr!.on('data', (chunk: Buffer) => {
       stderr = (stderr + chunk.toString('utf8')).slice(-stderrTailBytes);
@@ -183,7 +185,9 @@ export function runProcess(o: RunOptions): Promise<RunResult> {
       if (timer) clearTimeout(timer);
       // A pending SIGKILL is left to fire: helpers that ignored SIGTERM may outlive the CLI itself.
       o.signal?.removeEventListener('abort', onAbort);
-      emitLines(decoder.end());
+      const rest = decoder.end();
+      if (o.collectStdout && rest && collected < maxCollect) result.stdout += rest;
+      if (o.onLine) emitLines(rest);
       if (pending) {
         const last = pending;
         pending = '';

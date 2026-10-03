@@ -56,8 +56,10 @@ export interface FilosTestApi {
   getLastPost(): PostRecord | undefined;
   /** The Markdown of the last Export. */
   getLastExport(): string | undefined;
-  /** Everything Filos keeps in globalState, by key (the mode and the private confidence store). */
+  /** Everything Filos keeps in globalState, by key (the mode, the private confidence store, pull request reviews). */
   getGlobalState(): Record<string, unknown>;
+  /** The keys Filos keeps in each store: pull request reviews are global, branch and sample reviews per workspace. */
+  getStoredKeys(): { global: string[]; workspace: string[] };
   /**
    * Forgets every stored review (answers, comments, progress), every view state, the mode and the
    * confidence store, so a suite starts clean. Takes effect for the next review opened.
@@ -65,7 +67,7 @@ export interface FilosTestApi {
   resetStoredState(): Promise<void>;
 }
 
-/** Where review state is kept: per PR in workspaceState, mode and confidence in globalState. */
+/** Where review state is kept: branch and sample reviews in workspaceState; pull request reviews, mode and confidence in globalState. */
 type Stores = Pick<vscode.ExtensionContext, 'globalState' | 'workspaceState'>;
 
 export function createTestApi(c: ReviewController, stores: Stores): FilosTestApi {
@@ -104,6 +106,7 @@ export function createTestApi(c: ReviewController, stores: Stores): FilosTestApi
     getLastPost: () => c.currentReview?.lastPost,
     getLastExport: () => c.currentReview?.lastExport,
     getGlobalState: () => Object.fromEntries(stores.globalState.keys().map((k) => [k, stores.globalState.get(k)])),
+    getStoredKeys: () => ({ global: [...stores.globalState.keys()], workspace: [...stores.workspaceState.keys()] }),
     async resetStoredState() {
       for (const k of stores.workspaceState.keys()) if (/^filos\.(review|viewState):/.test(k)) await stores.workspaceState.update(k, undefined);
       for (const k of stores.globalState.keys()) await stores.globalState.update(k, undefined);

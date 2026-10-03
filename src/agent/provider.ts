@@ -11,6 +11,11 @@ export interface ComprehensionRequest {
   base: string;
   head: string;
   prTitle: string;
+  /**
+   * The pull request's description, written by its author (pull request reviews only). Untrusted:
+   * the prompt fences it as data and caps it (MAX_DESCRIPTION_CHARS).
+   */
+  prDescription?: string;
   /** Contents of the dependency index, if one exists (symbol, consumers, producers). */
   dependencyIndex?: string;
   signal?: AbortSignal;

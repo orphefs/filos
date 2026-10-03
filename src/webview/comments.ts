@@ -321,7 +321,9 @@ function postBox(ctx: PaneContext): HTMLElement {
   const busy = post.status === 'posting';
   const canPost = target.kind === 'github' && ready > 0 && !busy;
   const posted = review.comments.filter((c) => isPosted(c, ctx.ui)).length;
-  const label = ready === 1 ? 'Post 1 accepted comment' : ready || !posted ? `Post ${ready} accepted comments` : 'Nothing new to post';
+  // The button names where the review goes, as the host's confirmation will: "… to owner/repo#n".
+  const count = ready === 1 ? 'Post 1 accepted comment' : `Post ${ready} accepted comments`;
+  const label = !ready && posted ? 'Nothing new to post' : target.kind === 'github' ? `${count} to ${target.repo}#${target.number}` : count;
   sec.append(
     h(
       'div',

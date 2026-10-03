@@ -1,9 +1,10 @@
-// Small git helpers for the host. execFile with an argument array (no shell), so branch names and
-// paths are never interpreted by a shell.
+// Small git helpers for the host. An argument array (no shell), so branch names and paths are never
+// interpreted by a shell. git runs in a process group of its own (runProcess), so cancelling or
+// timing out a call also stops what git started: in a blobless clone, `worktree add`, `diff` and
+// `cat-file` start a `git fetch` child for missing blobs, which a kill of git alone would orphan.
 
-import { execFile } from 'node:child_process';
 import { statSync } from 'node:fs';
-import { resolveCommand } from '../agent/exec';
+import { resolveCommand, runProcess } from '../agent/exec';
 
 export class GitError extends Error {
   constructor(
@@ -20,6 +21,12 @@ export interface GitOptions {
   env?: NodeJS.ProcessEnv;
   /** Diffs can be large; the default covers most real PRs. */
   maxBuffer?: number;
+  /** Global options placed before the subcommand, e.g. ['-c', 'core.hooksPath=/dev/null']. */
+  config?: readonly string[];
+  /** Kills git (and everything it started) when aborted (GitError code ABORTED). */
+  signal?: AbortSignal;
+  /** Kills git (and everything it started) after this long (GitError code TIMED_OUT). For calls that may go to the network. */
+  timeoutMs?: number;
 }
 
 /** Settings that make our own git calls independent of the user's config (pagers, colour, hooks, signing). */
@@ -28,43 +35,49 @@ const NEUTRAL_CONFIG = ['-c', 'color.ui=false', '-c', 'core.quotepath=false', '-
 const MiB = 1024 * 1024;
 const DEFAULT_MAX_BUFFER = 64 * MiB;
 
-/** GitError codes for the two failures that look alike to execFile (both ENOENT). */
+/** GitError codes for the two failures that look alike when spawning (both ENOENT). */
 export const GIT_NOT_FOUND = 'ENOENT';
 export const FOLDER_NOT_FOUND = 'ENOTDIR';
-/** execFile's code when output passes maxBuffer. */
+/** GitError code when output passes maxBuffer (git is killed). */
 export const OUTPUT_TOO_LARGE = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+/** GitError codes for a call stopped by its signal or its timeout. */
+export const ABORTED = 'ABORTED';
+export const TIMED_OUT = 'TIMED_OUT';
 
-export function git(cwd: string, args: readonly string[], opts: GitOptions = {}): Promise<string> {
-  return new Promise((resolve, reject) => {
-    // On Windows a bare "git" would be looked up in cwd first, i.e. in the repo under review.
-    const exe = resolveCommand('git');
-    if (!exe) {
-      reject(new GitError('git is not installed or not on PATH', '', GIT_NOT_FOUND));
-      return;
-    }
-    const maxBuffer = opts.maxBuffer ?? DEFAULT_MAX_BUFFER;
-    execFile(
-      exe,
-      [...NEUTRAL_CONFIG, ...args],
-      { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...opts.env }, maxBuffer, windowsHide: true },
-      (err, stdout, stderr) => {
-        if (err) {
-          const e = err as NodeJS.ErrnoException & { code?: number | string };
-          const sub = subcommand(args);
-          if (e.code === 'ENOENT') {
-            // A missing cwd is reported as ENOENT too; it must not read as "git is not installed".
-            reject(isDirectory(cwd) ? new GitError('git is not installed or not on PATH', '', GIT_NOT_FOUND) : new GitError(`folder not found: ${cwd}`, '', FOLDER_NOT_FOUND));
-          } else if (e.code === OUTPUT_TOO_LARGE) {
-            reject(new GitError(`git ${sub} printed more than ${Math.round(maxBuffer / MiB)} MB`, '', OUTPUT_TOO_LARGE));
-          } else {
-            reject(new GitError(`git ${sub} failed: ${String(stderr).trim() || e.message}`, String(stderr ?? ''), e.code));
-          }
-          return;
-        }
-        resolve(String(stdout));
-      },
-    );
+export async function git(cwd: string, args: readonly string[], opts: GitOptions = {}): Promise<string> {
+  // On Windows a bare "git" would be looked up in cwd first, i.e. in the repo under review.
+  const exe = resolveCommand('git');
+  if (!exe) throw new GitError('git is not installed or not on PATH', '', GIT_NOT_FOUND);
+  const maxBuffer = opts.maxBuffer ?? DEFAULT_MAX_BUFFER;
+  const sub = subcommand(args);
+  if (opts.signal?.aborted) throw new GitError(`git ${sub} was cancelled`, '', ABORTED);
+  const r = await runProcess({
+    command: exe,
+    args: [...NEUTRAL_CONFIG, ...(opts.config ?? []), ...args],
+    cwd,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...opts.env },
+    signal: opts.signal,
+    timeoutMs: opts.timeoutMs,
+    collectStdout: true,
+    // One byte over the cap is enough to tell "too large" from "exactly the cap".
+    maxCollectBytes: maxBuffer + 1,
+    maxStdoutBytes: maxBuffer,
+    stderrTailBytes: 64 * 1024,
   });
+  const stderr = r.stderrTail;
+  if (r.spawnError) {
+    // A missing cwd is reported as ENOENT too; it must not read as "git is not installed".
+    if (r.spawnError.code === 'ENOENT') throw isDirectory(cwd) ? new GitError('git is not installed or not on PATH', '', GIT_NOT_FOUND) : new GitError(`folder not found: ${cwd}`, '', FOLDER_NOT_FOUND);
+    throw new GitError(`git ${sub} could not start: ${r.spawnError.message}`, '', r.spawnError.code);
+  }
+  if (r.aborted) throw new GitError(`git ${sub} was cancelled`, stderr, ABORTED);
+  if (r.timedOut) throw new GitError(`git ${sub} didn't finish within ${Math.round((opts.timeoutMs ?? 0) / 1000)} seconds`, stderr, TIMED_OUT);
+  if (r.overflow) throw new GitError(`git ${sub} printed more than ${Math.round(maxBuffer / MiB)} MB`, '', OUTPUT_TOO_LARGE);
+  if (r.exitCode !== 0) {
+    const how = r.exitCode === null ? `signal ${r.signal ?? '?'}` : `exit code ${r.exitCode}`;
+    throw new GitError(`git ${sub} failed: ${stderr.trim() || how}`, stderr, r.exitCode ?? r.signal ?? undefined);
+  }
+  return r.stdout;
 }
 
 /** The git command in args, past global options such as "-c key=value". For messages. */
@@ -167,7 +180,7 @@ export async function diff(root: string, base: string, head: string, opts: GitOp
   const maxBuffer = opts.maxBuffer ?? DEFAULT_MAX_BUFFER;
   const attrs: string[] = [];
   if (await supportsAttrSource(root, opts)) {
-    const mb = await git(root, ['merge-base', base, head], { env: opts.env }).then((o) => o.trim(), () => '');
+    const mb = await git(root, ['merge-base', base, head], { env: opts.env, config: opts.config, signal: opts.signal, timeoutMs: opts.timeoutMs }).then((o) => o.trim(), () => '');
     if (mb) attrs.push(`--attr-source=${mb}`);
   }
   try {
