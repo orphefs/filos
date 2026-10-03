@@ -1,11 +1,12 @@
 // The Claude provider end to end against the fake CLI (test/fixtures/fake-claude), one test per mode.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { createProvider, ProviderError, type ProviderConfig } from '../../src/agent';
+import { runProcess } from '../../src/agent/exec';
 import type { ComprehensionRequest } from '../../src/agent/provider';
 import { FAKE_CLAUDE, FAKE_DIFF, FAKE_INDEX, FAKE_REPO, fixtureGraph } from './helpers';
 
@@ -110,6 +111,20 @@ describe('ClaudeCliProvider with the fake CLI', () => {
     assert.equal(res.graph.orientation, 'A custom orientation from FAKE_CLAUDE_GRAPH.');
   });
 
+  it('ok: absolute paths under the repo (as the Read tool uses them) are made repo-relative, not dropped', async () => {
+    const root = realpathSync(FAKE_REPO);
+    const g = fixtureGraph();
+    for (const n of g.nodes) for (const a of n.anchors) a.file = join(root, a.file);
+    for (const f of g.files) f.path = join(root, f.path);
+    const custom = join(scratch, 'absolute-graph.json');
+    writeFileSync(custom, JSON.stringify(g));
+    const res = await provider('ok', {}, { FAKE_CLAUDE_GRAPH: custom }).comprehend(request());
+    const want = fixtureGraph();
+    assert.deepEqual(res.graph.nodes.map((n) => n.anchors.map((a) => a.file)), want.nodes.map((n) => n.anchors.map((a) => a.file)));
+    assert.deepEqual(res.graph.files.map((f) => f.path), want.files.map((f) => f.path));
+    assert.ok(res.warnings.some((w) => w.startsWith('repaired: made absolute path')), res.warnings.join('\n'));
+  });
+
   it('fenced: falls back to JSON inside the text answer', async () => {
     const res = await provider('fenced').comprehend(request());
     assert.equal(res.graph.nodes.length, 7);
@@ -193,6 +208,21 @@ describe('ClaudeCliProvider with the fake CLI', () => {
 
   it('loginCommand points at the configured CLI', () => {
     assert.equal(createProvider({ id: 'claude', claudePath: 'claude', maxBudgetUsd: 1, timeoutSeconds: 5 }).loginCommand, 'claude auth login');
-    assert.equal(createProvider({ id: 'claude', claudePath: '/opt/my tools/claude', maxBudgetUsd: 1, timeoutSeconds: 5 }).loginCommand, '"/opt/my tools/claude" auth login');
+    const spaced = createProvider({ id: 'claude', claudePath: '/opt/my tools/claude', maxBudgetUsd: 1, timeoutSeconds: 5 });
+    assert.equal(spaced.loginCommand, '"/opt/my tools/claude" auth login');
+    assert.deepEqual(spaced.login, { command: '/opt/my tools/claude', args: ['auth', 'login'] }, 'unquoted, for a terminal that runs it without a shell');
+  });
+
+  it('ok: a timeout of 0 means the default, not "kill at once"', async () => {
+    const res = await provider('ok', { timeoutSeconds: 0 }).comprehend(request());
+    assert.equal(res.graph.nodes.length, 7);
+  });
+});
+
+describe('runProcess', () => {
+  it('treats a timeout beyond what setTimeout can hold as long, not as "now"', async () => {
+    const r = await runProcess({ command: process.execPath, args: ['-e', 'setTimeout(() => {}, 200)'], cwd: process.cwd(), timeoutMs: 3_000_000_000 });
+    assert.equal(r.timedOut, false);
+    assert.equal(r.exitCode, 0);
   });
 });

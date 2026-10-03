@@ -2,6 +2,8 @@
 // Agent CLIs run for minutes and may start helper processes, so we kill the whole process group.
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import { statSync } from 'node:fs';
+import { win32 } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 export interface RunOptions {
@@ -41,6 +43,48 @@ export interface RunResult {
 }
 
 const MiB = 1024 * 1024;
+/** setTimeout fires almost at once for delays above 2^31-1 ms, so a huge timeout must be capped, not passed on. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+export interface CommandLookup {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  isFile?: (path: string) => boolean;
+}
+
+/**
+ * The executable to spawn for a command. On Windows a bare name is looked up in the child's cwd
+ * before PATH, so a git.exe or claude.exe committed to the repo under review would run instead of
+ * the real one; there we search absolute PATH entries ourselves. Undefined means not found.
+ * Elsewhere (and for anything with a directory part) the command is returned unchanged.
+ */
+export function resolveCommand(command: string, o: CommandLookup = {}): string | undefined {
+  if ((o.platform ?? process.platform) !== 'win32' || /[\\/]/.test(command)) return command;
+  const env = o.env ?? process.env;
+  const get = (name: string) => env[Object.keys(env).find((k) => k.toUpperCase() === name) ?? name];
+  const isFile = o.isFile ?? defaultIsFile;
+  // Only .com and .exe start without a shell (spawn refuses .cmd/.bat when shell is false).
+  const runnable = (get('PATHEXT') ?? '.COM;.EXE').split(';').map((e) => e.trim().toLowerCase()).filter((e) => e === '.com' || e === '.exe');
+  const exts = [...(win32.extname(command) ? [''] : []), ...(runnable.length ? runnable : ['.com', '.exe'])];
+  for (const dir of (get('PATH') ?? '').split(';')) {
+    // '' and '.' (and any relative entry) would mean the cwd again: the repo under review.
+    const d = dir.trim().replace(/^"(.*)"$/, '$1');
+    if (!d || !win32.isAbsolute(d)) continue;
+    for (const ext of exts) {
+      const candidate = win32.join(d, command + ext);
+      if (isFile(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
+function defaultIsFile(p: string): boolean {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
 
 export function runProcess(o: RunOptions): Promise<RunResult> {
   const maxLine = o.maxLineBytes ?? 32 * MiB;
@@ -51,11 +95,16 @@ export function runProcess(o: RunOptions): Promise<RunResult> {
 
   const result: RunResult = { exitCode: null, signal: null, stdout: '', stderrTail: '', timedOut: false, aborted: false, overflow: false };
   if (o.signal?.aborted) return Promise.resolve({ ...result, aborted: true });
+  const command = resolveCommand(o.command);
+  if (command === undefined) {
+    const err: NodeJS.ErrnoException = Object.assign(new Error(`spawn ${o.command} ENOENT`), { code: 'ENOENT', path: o.command });
+    return Promise.resolve({ ...result, spawnError: err });
+  }
 
   return new Promise((resolve) => {
     let child: ChildProcess;
     try {
-      child = spawn(o.command, [...o.args], {
+      child = spawn(command, [...o.args], {
         cwd: o.cwd,
         env: o.env ?? process.env,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -84,7 +133,7 @@ export function runProcess(o: RunOptions): Promise<RunResult> {
       killTimer.unref();
     };
 
-    const timer = o.timeoutMs !== undefined ? setTimeout(() => ((result.timedOut = true), terminate()), o.timeoutMs) : undefined;
+    const timer = o.timeoutMs !== undefined ? setTimeout(() => ((result.timedOut = true), terminate()), Math.min(o.timeoutMs, MAX_TIMER_MS)) : undefined;
     const onAbort = () => ((result.aborted = true), terminate());
     o.signal?.addEventListener('abort', onAbort, { once: true });
 

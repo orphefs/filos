@@ -3,7 +3,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import Ajv from 'ajv';
+import { DEFAULT_BUDGET_USD, DEFAULT_TIMEOUT_SECONDS, effectiveBudgetUsd, effectiveTimeoutSeconds, MAX_TIMEOUT_SECONDS } from '../../src/agent';
 import { ALLOWED_TOOLS, buildClaudeArgs, childEnv, classifyFailure, extractGraphJson, progressFor, repoReader, type CliResult } from '../../src/agent/claudeCli';
+import { resolveCommand } from '../../src/agent/exec';
+import { MAX_PROGRESS_CHARS, safeProgressText } from '../../src/agent/progress';
 import { buildPrompt, diffStats, MAX_DIFF_CHARS, SYSTEM_PROMPT } from '../../src/agent/prompt';
 import { ProviderError } from '../../src/agent/provider';
 import { toCliSchema } from '../../src/agent/schema';
@@ -236,5 +239,65 @@ describe('helpers', () => {
     ] } };
     assert.deepEqual(progressFor(msg, FAKE_REPO), ['Reading money/round.ts', 'Searching for “roundToCents”', 'Listing **/*.ts']);
     assert.deepEqual(progressFor({ type: 'user' }, FAKE_REPO), []);
+  });
+
+  it('progressFor never shows a path outside the repo, or link syntax from the agent', () => {
+    const link = '[Open the full diff](command:workbench.action.tasks.runTask?%22build%22)';
+    const msg = { type: 'assistant', message: { content: [
+      { type: 'tool_use', name: 'Read', input: { file_path: '/home/someone/.aws/credentials' } },
+      { type: 'tool_use', name: 'Read', input: { file_path: `${FAKE_REPO}/../graph.json` } },
+      { type: 'tool_use', name: 'Read', input: { file_path: link } },
+      { type: 'tool_use', name: 'Grep', input: { pattern: link } },
+      { type: 'tool_use', name: link, input: {} },
+    ] } };
+    const out = progressFor(msg, FAKE_REPO);
+    assert.equal(out[0], 'Reading a file outside the repo');
+    assert.equal(out[1], 'Reading a file outside the repo');
+    for (const m of out) {
+      assert.ok(!/[[\]()`]/.test(m), `link syntax survived: ${m}`);
+      assert.ok(m.length <= MAX_PROGRESS_CHARS, `too long: ${m}`);
+    }
+  });
+
+  it('safeProgressText strips link syntax, flattens whitespace and caps the length', () => {
+    assert.equal(safeProgressText('Reading [x](command:evil)'), 'Reading xcommand:evil');
+    assert.equal(safeProgressText('  a\n\tb `c`\u0007 '), 'a b c');
+    const long = safeProgressText('Reading ' + 'x/'.repeat(100));
+    assert.equal(long.length, MAX_PROGRESS_CHARS);
+    assert.ok(long.endsWith('…'));
+    assert.equal(safeProgressText(long), long, 'idempotent');
+  });
+
+  it('timeout and budget settings: 0, negatives and junk mean the default; the timeout is capped', () => {
+    for (const v of [0, -5, Number.NaN, Number.POSITIVE_INFINITY, '600', undefined, null]) {
+      assert.equal(effectiveTimeoutSeconds(v), DEFAULT_TIMEOUT_SECONDS, String(v));
+      assert.equal(effectiveBudgetUsd(v), DEFAULT_BUDGET_USD, String(v));
+    }
+    assert.equal(effectiveTimeoutSeconds(90), 90);
+    assert.equal(effectiveTimeoutSeconds(3_000_000), MAX_TIMEOUT_SECONDS);
+    assert.equal(effectiveBudgetUsd(0.25), 0.25);
+  });
+});
+
+describe('resolveCommand', () => {
+  const files = new Set(['C:\\Program Files\\Git\\cmd\\git.exe', 'C:\\Users\\me\\.local\\bin\\claude.exe', 'C:\\tools\\claude.cmd', 'C:\\repo\\git.exe', 'C:\\repo\\claude.exe']);
+  const win = (path: string, extra: Partial<Parameters<typeof resolveCommand>[1]> = {}) => ({ platform: 'win32' as const, env: { Path: path, PATHEXT: '.COM;.EXE;.BAT;.CMD' }, isFile: (p: string) => files.has(p), ...extra });
+
+  it('is a no-op outside Windows and for paths', () => {
+    assert.equal(resolveCommand('git', { platform: 'linux', env: {} }), 'git');
+    assert.equal(resolveCommand('C:\\x\\claude.exe', win('')), 'C:\\x\\claude.exe');
+  });
+
+  it('on Windows, finds the .exe on absolute PATH entries and never in the cwd', () => {
+    // '' and '.' are how a cwd lookup sneaks into PATH; relative entries resolve against the cwd too.
+    const path = ['', '.', 'repo', 'C:\\tools', 'C:\\Program Files\\Git\\cmd', '"C:\\Users\\me\\.local\\bin"'].join(';');
+    assert.equal(resolveCommand('git', win(path)), 'C:\\Program Files\\Git\\cmd\\git.exe');
+    assert.equal(resolveCommand('claude', win(path)), 'C:\\Users\\me\\.local\\bin\\claude.exe', '.cmd shims cannot be spawned without a shell');
+    assert.equal(resolveCommand('claude.exe', win(path)), 'C:\\Users\\me\\.local\\bin\\claude.exe');
+  });
+
+  it('on Windows, reports a command that is only in the cwd as not found', () => {
+    assert.equal(resolveCommand('git', win('.;;C:\\nothing')), undefined);
+    assert.equal(resolveCommand('git', win('', { env: {} })), undefined);
   });
 });

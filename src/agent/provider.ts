@@ -31,8 +31,10 @@ export interface AgentProvider {
   /** Cheap check that the CLI exists and is logged in. Throws a ProviderError if not. */
   checkReady(signal?: AbortSignal): Promise<void>;
   comprehend(req: ComprehensionRequest): Promise<ComprehensionResult>;
-  /** Shell command the user can run to log in again, e.g. "claude auth login". */
+  /** Shell command the user can run to log in again, e.g. "claude auth login". For display. */
   readonly loginCommand: string;
+  /** The same as an executable and arguments, so a terminal can run it without a shell parsing it. */
+  readonly login: { command: string; args: readonly string[] };
 }
 
 export type ProviderErrorKind =

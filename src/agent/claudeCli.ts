@@ -6,6 +6,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { ReviewGraph } from '../contract/graph';
 import { validateGraph } from '../contract/validate';
 import { runProcess, type RunResult } from './exec';
+import { safeProgressText } from './progress';
 import { buildPrompt } from './prompt';
 import { ProviderError, type AgentProvider, type ComprehensionRequest, type ComprehensionResult } from './provider';
 import { toCliSchema } from './schema';
@@ -178,6 +179,7 @@ export class ClaudeCliProvider implements AgentProvider {
   readonly id = 'claude';
   readonly displayName = 'Claude Code';
   readonly loginCommand: string;
+  readonly login: { command: string; args: readonly string[] };
 
   private readonly opts: ClaudeCliOptions;
 
@@ -187,6 +189,7 @@ export class ClaudeCliProvider implements AgentProvider {
     this.opts = { ...opts, claudePath };
     const exe = /\s/.test(claudePath) ? `"${claudePath}"` : claudePath;
     this.loginCommand = `${exe} auth login`;
+    this.login = { command: claudePath, args: ['auth', 'login'] };
   }
 
   async checkReady(signal?: AbortSignal): Promise<void> {
@@ -235,12 +238,13 @@ export class ClaudeCliProvider implements AgentProvider {
     let refused: string[] | undefined;
     const unparsed: string[] = [];
     let lastProgress = '';
-    const progress = (m: string) => {
+    const progress = (text: string) => {
+      const m = safeProgressText(text);
       if (m === lastProgress) return;
       lastProgress = m;
       req.onProgress?.(m);
     };
-    progress(`Starting Claude Code${model ? ` (${model})` : ''}…`);
+    progress(`Starting Claude Code${model ? ` with ${model}` : ''}…`);
 
     const run = await runProcess({
       command: claudePath,
@@ -268,7 +272,7 @@ export class ClaudeCliProvider implements AgentProvider {
             stop.abort();
             return;
           }
-          progress(`Claude Code is reading the change${initModel ? ` (${initModel})` : ''}…`);
+          progress(`Claude Code is reading the change${initModel ? ` with ${initModel}` : ''}…`);
         } else if (msg.type === 'system' && msg.subtype === 'thinking_tokens') {
           // The long quiet stretch before the answer: say something rather than freeze on the last file read.
           progress('Thinking about how the pieces fit…');
@@ -305,7 +309,9 @@ export class ClaudeCliProvider implements AgentProvider {
       g.pr = { title: req.prTitle, base: req.base, head: req.head };
       g.generatedBy = { provider: this.id, ...(usedModel ? { model: usedModel } : {}), at: new Date().toISOString() };
     }
-    const v = validateGraph(raw, { readFile: repoReader(req.repoRoot), repair: true });
+    // The CLI runs with cwd = the repo, so the agent's absolute paths come out symlink-resolved:
+    // rebase them against the real root, not the path we were given.
+    const v = validateGraph(raw, { readFile: repoReader(req.repoRoot), repair: true, repoRoot: realpathSync(req.repoRoot) });
     if (!v.ok) {
       throw new ProviderError('contract', `Claude Code's graph broke the contract (${v.errors.length} problem${v.errors.length === 1 ? '' : 's'}).`, v.errors.join('\n'));
     }
@@ -345,7 +351,10 @@ function parseLine(line: string): Msg | undefined {
   }
 }
 
-/** Human-readable progress for the loading view, from the agent's tool calls. */
+/**
+ * Human-readable progress for the loading view, from the agent's tool calls. Every part is
+ * agent-controlled, so each message goes through safeProgressText before anyone sees it.
+ */
 export function progressFor(msg: Msg, repoRoot: string): string[] {
   if (msg.type !== 'assistant' || !isRecord(msg.message) || !Array.isArray(msg.message.content)) return [];
   const out: string[] = [];
@@ -370,13 +379,15 @@ export function progressFor(msg: Msg, repoRoot: string): string[] {
         if (typeof block.name === 'string') out.push(`Using ${block.name}`);
     }
   }
-  return out;
+  return out.map((m) => safeProgressText(m));
 }
 
+/** Repo-relative path for display; never a path outside the repo, which could be anything. */
 function shortPath(p: string, root: string): string {
   if (!p) return 'a file';
-  const rel = relative(root, p);
-  return rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel.split(sep).join('/') : p;
+  const rel = relative(root, resolve(root, p));
+  const inside = rel !== '' && rel.split(sep)[0] !== '..' && !isAbsolute(rel);
+  return inside ? rel.split(sep).join('/') : 'a file outside the repo';
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);

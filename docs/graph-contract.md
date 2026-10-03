@@ -55,10 +55,10 @@ One JSON document describes a PR as an architecture diagram of the diff. It cove
 { file: "src/money/round.ts", startLine: 18, endLine: 30, symbol: "roundToCents" }
 ```
 
-- Paths are repo-relative and use forward slashes. Lines are **1-based and inclusive** in the **head** revision.
+- Paths are repo-relative and use forward slashes. Lines are **1-based and inclusive** in the **head** revision. The validator canonicalises paths (`\` becomes `/`; `./`, `.` and empty segments go) and returns the canonical graph, so later string comparisons agree. A path with a `..` segment, or an absolute path, is an error (see Repair mode below).
 - `startLine` is the declaration line itself (`export function roundToCents(`), not the doc comment above it.
 - `endLine` is the line that closes the declaration: its `}`, `};`, `];` or final `;`. A one-line declaration has `startLine === endLine`.
-- `symbol` is the declared name; class members are qualified (`Money.multiply`, `Money.constructor`). Its last segment appears on `startLine`. It exists so lines can be re-resolved if they drift; nothing does that yet.
+- `symbol` is the declared name; class members are qualified (`Money.multiply`, `Money.constructor`). Its last segment appears on `startLine`. It exists so lines can be re-resolved if they drift; nothing does that yet. At most 200 chars. Any characters are allowed: it is display-only, and hosts must escape it wherever they render it (the code pane's hover uses an escaped markdown code span).
 - The first anchor is the primary one (the declaration). Later anchors are supporting code: a private helper, the type it returns, or the tests that pin it. Test anchors have no `symbol` and may span several consecutive `test()` blocks.
 - An anchor with a `symbol` should match a region with the same symbol in that file's outline exactly, so clicking a node unfolds exactly one fold.
 
@@ -78,7 +78,7 @@ One JSON document describes a PR as an architecture diagram of the diff. It cove
 { from: "money/Money.multiply", to: "money/roundToCents", kind: "calls", label: "rounds the product" }
 ```
 
-Direction is always **from the dependent to the thing it depends on or acts on**.
+Direction is always **from the dependent to the thing it depends on or acts on**. Externals only consume: no edge points at an external, and only an external is the source of `consumes`.
 
 | Kind | Meaning |
 | --- | --- |
@@ -88,7 +88,7 @@ Direction is always **from the dependent to the thing it depends on or acts on**
 | `tests` | A test node exercises `to`. |
 | `affects` | Any other influence, e.g. a config value or a data shape. |
 
-Edges are declared once, between the most specific nodes they are true for (symbol → symbol, external → symbol). There are no duplicate module-level edges. **Proposal:** while a node is collapsed, the renderer lifts its edges to the nearest visible ancestor and merges duplicates, so the first screen still shows `checkout-web → money`. Labels are optional and short.
+Edges are declared once (a repeated `from`/`to`/`kind` is dropped with a warning), between the most specific nodes they are true for (symbol → symbol, external → symbol). There are no duplicate module-level edges. **Proposal:** while a node is collapsed, the renderer lifts its edges to the nearest visible ancestor and merges duplicates, so the first screen still shows `checkout-web → money`. Labels are optional and short.
 
 ## Risk
 
@@ -112,18 +112,22 @@ The weights are provisional; downstream impact dominates by design. In the sampl
 ## What the validator enforces
 
 **Errors** (the graph is rejected):
-- Anything the schema forbids: missing required fields, unknown fields or enum values, `contractVersion` other than `"0.1"`, an empty `nodes`, line numbers below 1, and over-long `orientation`, `label` or `gist`.
+- Anything the schema forbids: missing required fields, unknown fields or enum values, `contractVersion` other than `"0.1"`, an empty `nodes`, line numbers below 1, over-long `orientation`, `label`, `gist` or `symbol`.
 - Duplicate node ids, or duplicate file outlines.
 - A `module`/`external` with a parent; any other kind without one; an unknown parent; a parent that is not a `module`, `file` or `class`; parent cycles.
-- Edges whose `from` or `to` is not a node.
-- An anchor or region that ends before it starts; regions that partially overlap.
+- Edges whose `from` or `to` is not a node. A `consumes` edge whose source is not an external; any edge into an external.
+- An anchor or outline path that is absolute or has a `..` segment.
+- An anchor or region that ends before it starts; any two regions of a file that partially overlap.
 - With the head tree available: an anchor or region in a file that does not exist, or that runs past the end of the file.
 
 **Warnings** (the graph renders):
 - An external with anchors (they are ignored).
 - A non-module node with no anchors (clicking it shows no code).
 - A self-edge (ignored).
+- A duplicate edge (dropped).
 - An anchor in a file with no outline (no folds or gists there).
+
+**Repair mode** (agent output only; hand-written graphs stay strict). Instead of rejecting, the validator fixes line-number and path slips and records a `repaired:` warning for each: it swaps an inverted range, clamps a range that runs past the end of the file, trims or drops a partially overlapping region, makes an absolute path under the repo root relative, drops ranges and outlines in missing files or outside the repo, flips a reversed `consumes` edge, and drops any other edge that breaks the external rules. What repair leaves behind satisfies the strict line, path and edge rules. If repair drops every anchor, or every file outline, the graph is rejected instead: a review with no code is a failed run, not a successful one.
 
 The validator does **not** check that a line range lands on the declaration it names. The sample was checked with a throwaway script that asserts this, and an agent pass will need the same check (or re-resolution by `symbol`) before its anchors can be trusted.
 

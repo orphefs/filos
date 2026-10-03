@@ -85,12 +85,15 @@ export function planHolds(editor: vscode.TextEditor, plan: FoldPlan): boolean {
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
- * Applies a fold plan to `editor`, which must be focused: VS Code's fold commands act on the
- * focused editor only, and silently do nothing otherwise. Folding ranges are computed
- * asynchronously after a file opens (and after our provider fires), so the first attempt can hit
- * a model without our regions; retry until the visible ranges agree with the plan or the deadline
- * passes. Before each retry `focus` is called again: focus can be taken away meanwhile (by a
- * previous selection handing focus back to the graph, say).
+ * Applies a fold plan to `editor`, which must be the active editor: VS Code's fold commands act on
+ * the focused or else the active code editor, and silently do nothing when that is another one.
+ * Folding ranges are computed asynchronously after a file opens (and after our provider fires), so
+ * the first attempt can hit a model without our regions; retry until the visible ranges agree with
+ * the plan or the deadline passes.
+ *
+ * Focus can move meanwhile. While `editor` stays active, retries leave focus where it is (the fold
+ * commands still reach it). Otherwise `refocus` decides: it takes focus back and resolves true, or
+ * resolves false when the user has moved on, and folding stops rather than pull focus back.
  */
 export interface FoldOutcome {
   /** The visible ranges agree with the plan. */
@@ -102,16 +105,17 @@ export interface FoldOutcome {
 export async function applyFoldPlan(
   editor: vscode.TextEditor,
   plan: FoldPlan,
-  opts: { isCurrent: () => boolean; focus: () => Thenable<unknown>; timeoutMs?: number },
+  opts: { isCurrent: () => boolean; refocus: () => Promise<boolean>; timeoutMs?: number },
 ): Promise<FoldOutcome> {
   const started = Date.now();
   const done = (verified: boolean, attempts: number): FoldOutcome => ({ verified, attempts, ms: Date.now() - started });
   if (!plan.fold.length && !plan.unfold.length) return done(true, 0);
   const deadline = started + (opts.timeoutMs ?? 3000);
   const lines = (rs: Region[]) => rs.map((r) => r.startLine - 1);
+  const active = () => vscode.window.activeTextEditor?.document === editor.document;
   for (let attempt = 1; ; attempt++) {
-    if (attempt > 1) await opts.focus();
-    if (!opts.isCurrent() || vscode.window.activeTextEditor?.document !== editor.document) return done(false, attempt - 1);
+    if (attempt > 1 && opts.isCurrent() && !active() && !(await opts.refocus())) return done(false, attempt - 1);
+    if (!opts.isCurrent() || !active()) return done(false, attempt - 1);
     if (plan.unfold.length) await vscode.commands.executeCommand('editor.unfold', { selectionLines: lines(plan.unfold), levels: 1 });
     if (plan.fold.length) await vscode.commands.executeCommand('editor.fold', { selectionLines: lines(plan.fold), levels: 1 });
     // visibleRanges reach the extension host as a separate event after the command returns, and

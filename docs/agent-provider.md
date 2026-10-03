@@ -76,12 +76,19 @@ The transient "Failed to refresh OAuth token: another Claude Code process is ref
 `authExpired` too; its `detail` says to retry in a minute, which the error view can show as is.
 
 `checkReady()` runs `claude auth status` (fast, no API call) and throws `notInstalled` or
-`authExpired`. `loginCommand` is `<claude path> auth login`.
+`authExpired`. `loginCommand` is `<claude path> auth login`, for display; `login` is the same as
+`{command, args}`, which the host runs in a terminal directly (`shellPath`/`shellArgs`, cwd = home), so
+no shell parses the path.
+
+The host reads `filos.claude.path`, `filos.claude.model`, `filos.claude.maxBudgetUsd` and
+`filos.agentTimeoutSeconds` from user settings only (`scope: machine`, read via `inspect().globalValue`):
+a workspace's `.vscode/settings.json` arrives with the branch under review and must not choose the
+binary or raise the limits. A relative `filos.claude.path` is refused.
 
 ## Testing
 
 - `npm run test:unit` runs the provider against `test/fixtures/fake-claude` in every mode (see its
-  README). Point `filos.claude.path` at `test/fixtures/fake-claude/claude` for e2e.
+  README). Point `filos.claude.path` (in user settings) at `test/fixtures/fake-claude/claude` for e2e.
 - `npx tsx scripts/smoke-claude.ts --model sonnet --budget 0.5` runs one real pass over the fixture
   repo and prints cost, duration, tools offered and the validated graph (it writes the transcript to
   a temp dir). It costs real money: about $0.14 and 50 s with Sonnet on 2026-10-03.

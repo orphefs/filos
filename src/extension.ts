@@ -29,6 +29,8 @@ export function activate(context: vscode.ExtensionContext): FilosApi {
     command('filos.reviewSample', () => controller.reviewSample()),
     command('filos.reviewSampleWithAgent', () => controller.reviewSampleWithAgent()),
     command('filos.reviewCurrentBranch', (arg?: unknown) => controller.reviewCurrentBranch(branchOptions(arg))),
+    // Base detection guesses (origin/HEAD, main, master); forks and PRs into develop need a choice.
+    command('filos.reviewCurrentBranchAgainst', () => controller.reviewCurrentBranch({ pickBase: true })),
   );
 
   return context.extensionMode === vscode.ExtensionMode.Production ? {} : { __test: createTestApi(controller) };

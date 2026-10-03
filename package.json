@@ -34,6 +34,11 @@
         "command": "filos.reviewCurrentBranch",
         "title": "Review Current Branch",
         "category": "Filos"
+      },
+      {
+        "command": "filos.reviewCurrentBranchAgainst",
+        "title": "Review Current Branch Against\u2026",
+        "category": "Filos"
       }
     ],
     "configuration": {
@@ -45,27 +50,35 @@
             "claude"
           ],
           "default": "claude",
-          "description": "Agent CLI used for the comprehension pass."
+          "description": "Agent CLI used for the comprehension pass.",
+          "scope": "machine"
         },
         "filos.claude.path": {
           "type": "string",
           "default": "claude",
-          "description": "Path to the claude CLI: a name on PATH, an absolute path, ~/\u2026, or a workspace-relative path like ./node_modules/.bin/claude."
+          "scope": "machine",
+          "description": "Path to the claude CLI: a name on PATH, an absolute path, or ~/\u2026. Read from user settings only, so a repository can't choose which program Filos runs."
         },
         "filos.claude.model": {
           "type": "string",
           "default": "sonnet",
-          "description": "Model alias passed to --model. Empty uses the CLI's default model, which may be slower and more expensive."
+          "scope": "machine",
+          "description": "Model alias passed to --model. Empty uses the CLI's default model, which may be slower and more expensive. Read from user settings only."
         },
         "filos.claude.maxBudgetUsd": {
           "type": "number",
           "default": 1,
-          "description": "Spending cap per comprehension pass."
+          "minimum": 0.01,
+          "scope": "machine",
+          "description": "Spending cap in US dollars per comprehension pass. Read from user settings only, so a repository can't raise it."
         },
         "filos.agentTimeoutSeconds": {
           "type": "number",
           "default": 600,
-          "description": "Kill the agent CLI after this many seconds."
+          "minimum": 1,
+          "maximum": 3600,
+          "scope": "machine",
+          "description": "Kill the agent CLI after this many seconds (at most 3600). Read from user settings only."
         }
       }
     }
@@ -100,7 +113,13 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "The bundled sample works anywhere. Reviewing the current branch runs git and the agent CLI in the folder, so it needs a trusted workspace."
+      "description": "The bundled sample works anywhere. Reviewing the current branch runs git and the agent CLI in the folder, so it needs a trusted workspace.",
+      "restrictedConfigurations": [
+        "filos.claude.path",
+        "filos.claude.model",
+        "filos.claude.maxBudgetUsd",
+        "filos.agentTimeoutSeconds"
+      ]
     }
   }
 }

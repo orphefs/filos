@@ -1,24 +1,24 @@
 // Orchestrates a review: picks the repo and range, gets a graph (bundled fixture or agent), keeps
 // the session, and routes webview messages to the code pane. The only place that knows all parts.
 
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import * as vscode from 'vscode';
-import { createProvider, ProviderError, type AgentProvider, type ProviderConfig } from '../agent';
+import { createProvider, effectiveBudgetUsd, effectiveTimeoutSeconds, ProviderError, type AgentProvider, type ProviderConfig } from '../agent';
+import { resolveCommand } from '../agent/exec';
+import { safeProgressText } from '../agent/progress';
 import type { ReviewGraph } from '../contract/graph';
 import { validateGraph } from '../contract/validate';
 import type { ErrorAction, GraphSource, HostToWebview, WebviewToHost } from '../protocol';
 import { CodePane } from './codePane';
+import { readDependencyIndex } from './depIndex';
 import { describeAgentError } from './errors';
 import { OutlineFoldingProvider } from './folding';
 import * as git from './git';
 import { ReviewPanel } from './panel';
 import { materialiseSample, type SampleRepo } from './sample';
 import { ReviewSession, type RenderedInfo, type ReviewTarget } from './session';
-
-const DEP_INDEX = join('.filos', 'dependency-index.json');
-const MAX_DEP_INDEX_BYTES = 5 * 1024 * 1024;
 
 interface AgentInput {
   diff: string;
@@ -113,8 +113,10 @@ export class ReviewController implements vscode.Disposable {
       this.fail(session, 'Could not compute the sample diff.', ['retry', 'useFixture'], String(e));
       return;
     }
+    if (this.session !== session) return; // superseded while git ran
     const index = readDependencyIndex(repo.repoRoot);
-    await this.runAgent(session, { diff, dependencyIndex: index.text, note: `Comparing ${repo.head} with ${repo.base}`, warnings: index.warning ? [index.warning] : [] });
+    const warnings = [...git.diffWarnings(diff), ...(index.warning ? [index.warning] : [])];
+    await this.runAgent(session, { diff, dependencyIndex: index.text, note: `Comparing ${repo.head} with ${repo.base}`, warnings });
   }
 
   /** Committed changes on the current branch of the first git workspace folder, read by the agent. */
@@ -152,6 +154,10 @@ export class ReviewController implements vscode.Disposable {
     if (!base) {
       base = await pickBase(root, head);
       if (!base) return;
+      // Re-run and Retry keep the chosen base rather than asking again.
+      const chosen = { base };
+      this.lastBranchOptions = chosen;
+      this.lastAttempt = () => this.reviewCurrentBranch(chosen);
     }
     if (!(await git.mergeBase(root, base, 'HEAD'))) {
       void vscode.window.showErrorMessage(`Filos: ${head} and ${base} have no common history to compare.`);
@@ -164,7 +170,7 @@ export class ReviewController implements vscode.Disposable {
       return;
     }
 
-    const warnings: string[] = [];
+    const warnings: string[] = git.diffWarnings(diff);
     let note = `Comparing ${head} with ${base}`;
     if (await git.hasUncommittedChanges(root)) {
       note += ' · uncommitted changes are ignored';
@@ -251,7 +257,11 @@ export class ReviewController implements vscode.Disposable {
         if (s) void s.saveState(msg.state);
         return;
       case 'action':
-        void this.handleAction(msg.action).catch((e: unknown) => this.log.error(`action ${msg.action}: ${String(e)}`));
+        // The webview has no spinner of its own for these: a failure must be shown, not only logged.
+        void this.handleAction(msg.action).catch((e: unknown) => {
+          this.log.error(`action ${msg.action}: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
+          void vscode.window.showErrorMessage(`Filos: ${e instanceof Error ? e.message : String(e)}`, 'Show Log').then((c) => c && this.log.show());
+        });
         return;
       case 'rendered': {
         if (!s) return;
@@ -336,10 +346,13 @@ export class ReviewController implements vscode.Disposable {
   }
 
   private async runAgent(session: ReviewSession, input: AgentInput): Promise<void> {
+    // A newer review (or a closed panel) owns the view now: don't cancel its run or start a hidden one.
+    if (this.session !== session) return;
     this.cancelAgent();
-    const cfg = readProviderConfig();
+    let cfg: ProviderConfig;
     let provider: AgentProvider;
     try {
+      cfg = readProviderConfig();
       provider = createProvider({ ...cfg, onRawLine: (line) => this.log.trace(`[cli] ${line.length > 2000 ? line.slice(0, 2000) + '…' : line}`) });
     } catch (e) {
       this.fail(session, 'Filos could not set up the agent.', ['useFixture'], e instanceof Error ? e.message : String(e));
@@ -349,8 +362,10 @@ export class ReviewController implements vscode.Disposable {
     const abort = new AbortController();
     this.agentRun = abort;
     const isCurrent = () => this.agentRun === abort && this.session === session;
-    const progressTo = (report: (m: string) => void) => (message: string) => {
+    const progressTo = (report: (m: string) => void) => (text: string) => {
       if (!isCurrent()) return;
+      // Progress can carry agent-chosen text, and notifications render [x](command:...) as links.
+      const message = safeProgressText(text);
       this.log.info(`agent: ${message}`);
       report(message);
       this.setLoading(session, message, input.note);
@@ -411,20 +426,35 @@ export class ReviewController implements vscode.Disposable {
     this.agentRun = undefined;
   }
 
-  /** Login happens in the user's own terminal, with the CLI's own flow: Filos never sees credentials. */
+  /**
+   * Login happens in the user's own terminal, with the CLI's own flow: Filos never sees credentials.
+   * The terminal runs the CLI directly rather than typing a command into a shell, so no shell
+   * (PowerShell in particular) has to parse a path with spaces.
+   */
   private openLoginTerminal(): void {
-    let command: string;
+    let provider: AgentProvider;
     try {
-      command = (this.lastProvider ?? createProvider(readProviderConfig())).loginCommand;
+      provider = this.lastProvider ?? createProvider(readProviderConfig());
     } catch (e) {
       void vscode.window.showErrorMessage(`Filos: ${e instanceof Error ? e.message : String(e)}`);
       return;
     }
     const name = 'Filos login';
-    const terminal = vscode.window.terminals.find((t) => t.name === name && t.exitStatus === undefined) ?? vscode.window.createTerminal({ name });
+    const running = vscode.window.terminals.find((t) => t.name === name && t.exitStatus === undefined);
+    if (running) {
+      running.show();
+      return;
+    }
+    const { command, args } = provider.login;
+    const shellPath = resolveCommand(command);
+    if (!shellPath) {
+      void vscode.window.showErrorMessage(`Filos: can't find the ${provider.displayName} CLI ("${command}") on PATH. Install it, or set "filos.claude.path".`);
+      return;
+    }
+    // Home, not the repo under review, so nothing in the PR's checkout can shape the login.
+    const terminal = vscode.window.createTerminal({ name, shellPath, shellArgs: [...args], cwd: homedir() });
     terminal.show();
-    terminal.sendText(command);
-    this.log.info(`opened "${name}" terminal: ${command}`);
+    this.log.info(`opened "${name}" terminal: ${provider.loginCommand}`);
   }
 
   private onPanelClosed(): void {
@@ -443,37 +473,34 @@ export class ReviewController implements vscode.Disposable {
   }
 }
 
+/**
+ * Settings that choose what Filos runs and how much it may spend come from user settings only.
+ * A workspace's .vscode/settings.json arrives with the branch under review, so its values are
+ * ignored here even on hosts that don't enforce the settings' machine scope.
+ */
 function readProviderConfig(): ProviderConfig {
   const c = vscode.workspace.getConfiguration('filos');
+  const user = <T>(key: string): T | undefined => {
+    const i = c.inspect<T>(key);
+    return i?.globalValue ?? i?.defaultValue;
+  };
   const id = c.get<string>('provider', 'claude');
+  const model = user<unknown>('claude.model');
   return {
     id: id as ProviderConfig['id'],
-    claudePath: resolveExecutable(c.get<string>('claude.path', 'claude')),
-    model: c.get<string>('claude.model', 'sonnet') || undefined,
-    maxBudgetUsd: c.get<number>('claude.maxBudgetUsd', 1),
-    timeoutSeconds: c.get<number>('agentTimeoutSeconds', 600),
+    claudePath: resolveExecutable(String(user<unknown>('claude.path') ?? 'claude')),
+    model: typeof model === 'string' && model ? model : undefined,
+    maxBudgetUsd: effectiveBudgetUsd(user<unknown>('claude.maxBudgetUsd')),
+    timeoutSeconds: effectiveTimeoutSeconds(user<unknown>('agentTimeoutSeconds')),
   };
 }
 
-/** "~/bin/claude" and workspace-relative paths ("./node_modules/.bin/claude") work as users expect. */
+/** A name on PATH, an absolute path, or "~/…". A relative path would depend on some cwd, so it is refused. */
 function resolveExecutable(p: string): string {
   const v = p.trim() || 'claude';
-  if (v === '~' || v.startsWith('~/')) return join(homedir(), v.slice(1));
+  if (v === '~' || v.startsWith('~/') || v.startsWith('~\\')) return join(homedir(), v.slice(1));
   if (isAbsolute(v) || !/[\\/]/.test(v)) return v;
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  return folder ? resolve(folder.uri.fsPath, v) : v;
-}
-
-function readDependencyIndex(root: string): { text?: string; warning?: string } {
-  const file = join(root, DEP_INDEX);
-  try {
-    if (!existsSync(file)) return {};
-    const size = statSync(file).size;
-    if (size > MAX_DEP_INDEX_BYTES) return { warning: `${DEP_INDEX} is ${Math.round(size / 1024 / 1024)} MB, over the 5 MB limit, so it was not used.` };
-    return { text: readFileSync(file, 'utf8') };
-  } catch (e) {
-    return { warning: `${DEP_INDEX} could not be read: ${e instanceof Error ? e.message : String(e)}` };
-  }
+  throw new Error(`the setting "filos.claude.path" must be a command name on PATH, an absolute path, or start with ~/ ("${v}" is a relative path).`);
 }
 
 /** Head-revision reader for validation, confined to the repo. */
@@ -489,11 +516,16 @@ function repoReader(root: string): (path: string) => string | undefined {
   };
 }
 
+/** Local and remote-tracking branches, the detected default first (and preselected). */
 async function pickBase(root: string, head: string): Promise<string | undefined> {
-  const branches = (await git.localBranches(root)).filter((b) => b !== head);
-  if (!branches.length) {
+  const detected = await git.defaultBaseRef(root);
+  const all = (await git.branches(root)).filter((b) => b !== head);
+  const ordered = detected && all.includes(detected) ? [detected, ...all.filter((b) => b !== detected)] : all;
+  if (!ordered.length) {
     void vscode.window.showErrorMessage(`Filos: ${head} is the only branch, so there is nothing to compare it with.`);
     return undefined;
   }
-  return vscode.window.showQuickPick(branches, { title: `Filos: review ${head} against which base branch?`, placeHolder: 'Base branch (committed changes since the merge base are reviewed)' });
+  const items: vscode.QuickPickItem[] = ordered.map((b) => ({ label: b, description: b === detected ? 'detected default' : undefined }));
+  const picked = await vscode.window.showQuickPick(items, { title: `Filos: review ${head} against which base branch?`, placeHolder: 'Base branch (committed changes since the merge base are reviewed)' });
+  return picked?.label;
 }

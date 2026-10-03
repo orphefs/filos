@@ -7,8 +7,8 @@
 // to open it, which is noise on a first look at Filos.
 
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
 import { git } from './git';
 
 export const SAMPLE_BASE = 'main';
@@ -41,8 +41,20 @@ function isolated(gitDir: string): string[] {
   return ['-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', '-c', `core.hooksPath=${join(gitDir, 'no-hooks')}`, '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false'];
 }
 
+/** One materialisation at a time per storage dir: overlapping commands share it. */
+const inFlight = new Map<string, Promise<SampleRepo>>();
+
 /** Ensures the sample repo exists under storageDir and returns where it is. */
-export async function materialiseSample(fixturesDir: string, storageDir: string, extensionVersion: string): Promise<SampleRepo> {
+export function materialiseSample(fixturesDir: string, storageDir: string, extensionVersion: string): Promise<SampleRepo> {
+  const key = resolve(storageDir);
+  const running = inFlight.get(key);
+  if (running) return running;
+  const p = materialise(fixturesDir, storageDir, extensionVersion).finally(() => inFlight.delete(key));
+  inFlight.set(key, p);
+  return p;
+}
+
+async function materialise(fixturesDir: string, storageDir: string, extensionVersion: string): Promise<SampleRepo> {
   const baseTree = join(fixturesDir, 'sample-repo', 'base');
   const headTree = join(fixturesDir, 'sample-repo', 'head');
   if (!existsSync(baseTree) || !existsSync(headTree)) throw new Error(`The bundled sample is missing from ${fixturesDir}.`);
@@ -55,10 +67,33 @@ export async function materialiseSample(fixturesDir: string, storageDir: string,
     return { repoRoot: realpathSync(target), gitEnv, base: SAMPLE_BASE, head: SAMPLE_HEAD, prTitle: SAMPLE_TITLE, created: false };
   }
 
-  rmSync(target, { recursive: true, force: true });
-  rmSync(gitDir, { recursive: true, force: true });
+  // Build beside the real location and move it into place when complete, marker last, so a
+  // build that fails or is interrupted half way never looks reusable.
+  mkdirSync(storageDir, { recursive: true });
+  const scratch = mkdtempSync(join(storageDir, '.sample-build-'));
+  try {
+    const work = join(scratch, 'sample-repo');
+    const workGit = join(scratch, 'sample-repo.git');
+    await build(baseTree, headTree, work, workGit);
+
+    rmSync(target, { recursive: true, force: true });
+    rmSync(gitDir, { recursive: true, force: true });
+    renameSync(work, target);
+    renameSync(workGit, gitDir);
+    // `git init` recorded the build location as core.worktree; point it at the final one.
+    await git(target, [...isolated(gitDir), 'config', 'core.worktree', target], { env: gitEnv });
+    writeFileSync(join(gitDir, MARKER), fingerprint);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+  return { repoRoot: realpathSync(target), gitEnv, base: SAMPLE_BASE, head: SAMPLE_HEAD, prTitle: SAMPLE_TITLE, created: true };
+}
+
+/** Commits base on main and head on the feature branch, in a fresh work tree and git dir. */
+async function build(baseTree: string, headTree: string, target: string, gitDir: string): Promise<void> {
   mkdirSync(target, { recursive: true });
-  const run = (args: string[], env?: NodeJS.ProcessEnv) => git(target, [...isolated(gitDir), ...args], { env: { ...gitEnv, ...env } });
+  const env = { GIT_DIR: gitDir, GIT_WORK_TREE: target };
+  const run = (args: string[], extra?: NodeJS.ProcessEnv) => git(target, [...isolated(gitDir), ...args], { env: { ...env, ...extra } });
 
   // `git init -b` needs git 2.28; symbolic-ref works everywhere.
   await run(['init', '--quiet']);
@@ -73,9 +108,6 @@ export async function materialiseSample(fixturesDir: string, storageDir: string,
   cpSync(headTree, target, { recursive: true });
   await run(['add', '-A']);
   await run(['commit', '--quiet', '--no-verify', '-m', SAMPLE_TITLE], HEAD_ENV);
-
-  writeFileSync(join(gitDir, MARKER), fingerprint);
-  return { repoRoot: realpathSync(target), gitEnv, base: SAMPLE_BASE, head: SAMPLE_HEAD, prTitle: SAMPLE_TITLE, created: true };
 }
 
 /** Reuse only an untouched copy made from the same fixtures: on the head branch, clean, same marker. */

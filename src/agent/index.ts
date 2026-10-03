@@ -18,14 +18,29 @@ export interface ProviderConfig {
   onRawLine?: (line: string) => void;
 }
 
+export const DEFAULT_TIMEOUT_SECONDS = 600;
+export const MAX_TIMEOUT_SECONDS = 3600;
+export const DEFAULT_BUDGET_USD = 1;
+
+/** A timeout of 0, a negative one or a non-number means the default, never "kill at once"; capped at an hour. */
+export function effectiveTimeoutSeconds(v: unknown): number {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return DEFAULT_TIMEOUT_SECONDS;
+  return Math.min(v, MAX_TIMEOUT_SECONDS);
+}
+
+/** The spending cap must be a positive amount; anything else means the default. */
+export function effectiveBudgetUsd(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : DEFAULT_BUDGET_USD;
+}
+
 export function createProvider(cfg: ProviderConfig): AgentProvider {
   switch (cfg.id) {
     case 'claude':
       return new ClaudeCliProvider({
         claudePath: cfg.claudePath || 'claude',
         model: cfg.model || undefined,
-        maxBudgetUsd: cfg.maxBudgetUsd,
-        timeoutSeconds: cfg.timeoutSeconds,
+        maxBudgetUsd: effectiveBudgetUsd(cfg.maxBudgetUsd),
+        timeoutSeconds: effectiveTimeoutSeconds(cfg.timeoutSeconds),
         env: cfg.env,
         promptVia: cfg.promptVia,
         onRawLine: cfg.onRawLine,

@@ -4,61 +4,157 @@
   "title": "Filos review graph (contract v0.1)",
   "type": "object",
   "additionalProperties": false,
-  "required": ["contractVersion", "pr", "orientation", "nodes", "edges", "files"],
+  "required": [
+    "contractVersion",
+    "pr",
+    "orientation",
+    "nodes",
+    "edges",
+    "files"
+  ],
   "properties": {
-    "contractVersion": { "const": "0.1" },
+    "contractVersion": {
+      "const": "0.1"
+    },
     "pr": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["title", "base", "head"],
+      "required": [
+        "title",
+        "base",
+        "head"
+      ],
       "properties": {
-        "title": { "type": "string", "minLength": 1 },
-        "base": { "type": "string", "minLength": 1 },
-        "head": { "type": "string", "minLength": 1 },
-        "author": { "type": "string" },
-        "url": { "type": "string" }
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "base": {
+          "type": "string",
+          "minLength": 1
+        },
+        "head": {
+          "type": "string",
+          "minLength": 1
+        },
+        "author": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
       }
     },
-    "orientation": { "type": "string", "minLength": 1, "maxLength": 600 },
+    "orientation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+    },
     "nodes": {
       "type": "array",
       "minItems": 1,
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "label", "kind", "change", "risk", "summary", "anchors"],
+        "required": [
+          "id",
+          "label",
+          "kind",
+          "change",
+          "risk",
+          "summary",
+          "anchors"
+        ],
         "properties": {
-          "id": { "type": "string", "minLength": 1 },
-          "label": { "type": "string", "minLength": 1, "maxLength": 80 },
-          "kind": { "enum": ["module", "file", "function", "class", "type", "external"] },
-          "parent": { "type": "string", "minLength": 1 },
-          "change": { "enum": ["added", "modified", "removed", "context"] },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "kind": {
+            "enum": [
+              "module",
+              "file",
+              "function",
+              "class",
+              "type",
+              "external"
+            ]
+          },
+          "parent": {
+            "type": "string",
+            "minLength": 1
+          },
+          "change": {
+            "enum": [
+              "added",
+              "modified",
+              "removed",
+              "context"
+            ]
+          },
           "risk": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["signals", "why"],
+            "required": [
+              "signals",
+              "why"
+            ],
             "properties": {
               "signals": {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                  "externalConsumers": { "type": "integer", "minimum": 0 },
-                  "internalFanOut": { "type": "integer", "minimum": 0 },
-                  "publicApi": { "type": "boolean" },
-                  "hasTests": { "type": "boolean" },
-                  "testsChanged": { "type": "boolean" },
-                  "linesChanged": { "type": "integer", "minimum": 0 },
-                  "behaviourChange": { "type": "boolean" }
+                  "externalConsumers": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "internalFanOut": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "publicApi": {
+                    "type": "boolean"
+                  },
+                  "hasTests": {
+                    "type": "boolean"
+                  },
+                  "testsChanged": {
+                    "type": "boolean"
+                  },
+                  "linesChanged": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "behaviourChange": {
+                    "type": "boolean"
+                  }
                 }
               },
-              "judgement": { "type": "number", "minimum": 0, "maximum": 1 },
-              "why": { "type": "string", "minLength": 1 }
+              "judgement": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "why": {
+                "type": "string",
+                "minLength": 1
+              }
             }
           },
-          "summary": { "type": "string", "minLength": 1 },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
           "anchors": {
             "type": "array",
-            "items": { "$ref": "#/definitions/anchor" }
+            "items": {
+              "$ref": "#/definitions/anchor"
+            }
           }
         }
       }
@@ -68,12 +164,32 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["from", "to", "kind"],
+        "required": [
+          "from",
+          "to",
+          "kind"
+        ],
         "properties": {
-          "from": { "type": "string", "minLength": 1 },
-          "to": { "type": "string", "minLength": 1 },
-          "kind": { "enum": ["calls", "imports", "affects", "consumes", "tests"] },
-          "label": { "type": "string" }
+          "from": {
+            "type": "string",
+            "minLength": 1
+          },
+          "to": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "calls",
+              "imports",
+              "affects",
+              "consumes",
+              "tests"
+            ]
+          },
+          "label": {
+            "type": "string"
+          }
         }
       }
     },
@@ -82,20 +198,42 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["path", "regions"],
+        "required": [
+          "path",
+          "regions"
+        ],
         "properties": {
-          "path": { "type": "string", "minLength": 1 },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
           "regions": {
             "type": "array",
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["startLine", "endLine", "gist"],
+              "required": [
+                "startLine",
+                "endLine",
+                "gist"
+              ],
               "properties": {
-                "startLine": { "type": "integer", "minimum": 1 },
-                "endLine": { "type": "integer", "minimum": 1 },
-                "symbol": { "type": "string" },
-                "gist": { "type": "string", "minLength": 1, "maxLength": 140 }
+                "startLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "endLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "symbol": {
+                  "$ref": "#/definitions/symbol"
+                },
+                "gist": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 140
+                }
               }
             }
           }
@@ -105,11 +243,19 @@
     "generatedBy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["provider"],
+      "required": [
+        "provider"
+      ],
       "properties": {
-        "provider": { "type": "string" },
-        "model": { "type": "string" },
-        "at": { "type": "string" }
+        "provider": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "at": {
+          "type": "string"
+        }
       }
     }
   },
@@ -117,13 +263,33 @@
     "anchor": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["file", "startLine", "endLine"],
+      "required": [
+        "file",
+        "startLine",
+        "endLine"
+      ],
       "properties": {
-        "file": { "type": "string", "minLength": 1 },
-        "startLine": { "type": "integer", "minimum": 1 },
-        "endLine": { "type": "integer", "minimum": 1 },
-        "symbol": { "type": "string" }
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "symbol": {
+          "$ref": "#/definitions/symbol"
+        }
       }
+    },
+    "symbol": {
+      "description": "A declared name, e.g. Money.multiply. Display-only: hosts must escape it wherever they render it (the code pane puts it in an escaped markdown code span), so any characters are allowed.",
+      "type": "string",
+      "maxLength": 200
     }
   }
 }
