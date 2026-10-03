@@ -124,7 +124,25 @@ Specified in `docs/review-and-didactic.md`; question contract in `docs/questions
 - **Confidence:** stored per module path in `globalState`, holding only module path, confidence and last-touched date. Familiarity sets the start value (0.2 / 0.5 / 0.8). Understand answers then add +0.15 for right first time, +0.05 for right on the retry, and −0.10 for wrong.
 - **Depth:** the question set proposes skim, standard or deep, and the depth menu overrides it. The sample's split is 4 / 12 / 14 questions.
 
-The live agent tasks (questions, grading, drafting, threads) are untested against the real model, because the `claude` CLI was logged out during the build. They pass against the fake CLI.
+### The pull-request flow
+
+"Filos: Review Pull Request…" takes a URL, `owner/repo#n` or a number. It runs these steps, all through the `claude` and `gh` CLIs:
+
+1. Look up the PR.
+2. Make an isolated blobless clone and worktree in Filos's storage. Your checkouts are never touched.
+3. Run the comprehension pass.
+4. Run the questions pass.
+5. Go through the questionnaire, then the comments, then a modal confirmation, then post.
+
+PR files open read-only through a `filos-pr:` file system, never as `file:` URIs. That means other extensions and VS Code's Git integration never treat PR content as workspace code.
+
+It was verified live on orphefs/parkfinder#9 (2026-10-03, Sonnet):
+- comprehension: 312 s, $0.86
+- questions: 254 s, $0.60
+- each graded answer or thread reply: about $0.05 and 8–15 s
+- a 2-comment review was posted for real, with explicit approval.
+
+Open question from that run: the agent's orientation and Socrates (which follows the counted risk signals) can disagree about which module is riskiest. Which should the guide follow?
 
 ### Open UX questions raised by the prototype
 
