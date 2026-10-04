@@ -1,0 +1,343 @@
+<title>Filos Downstream Search</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: a reading column of three annotated VS Code frames (step, graph, consumer detail), then decisions. */
+  :root {
+    /* page */
+    --page: #eef0f4; --ink: #1d2433; --ink-soft: #586176; --rule: #d5d9e2; --note: #fff8e1; --note-ink: #5c4a00; --note-rule: #e9d58a;
+    /* VS Code Light Modern inside the frames */
+    --vs-bg: #ffffff; --vs-side: #f8f8f8; --vs-fg: #3b3b3b; --vs-muted: #717171; --vs-border: #e5e5e5; --vs-accent: #005fb8; --vs-accent-fg: #ffffff;
+    --vs-code: #f6f8fa; --vs-chip: #eceef1;
+    /* meaning (Filos's own) */
+    --risk: #d1242f; --risk-tint: #fbe4e6; --warn: #9a6700; --warn-tint: #fff1c7; --ok: #4b5563; --ok-tint: #eef0f3; --ext: #8250df; --ext-tint: #f3ecff; --done: #1a7f37;
+    --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+    --ui: system-ui, "Segoe UI", Ubuntu, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --page: #101318; --ink: #e3e6ed; --ink-soft: #9aa3b5; --rule: #2a2f39; --note: #2b2611; --note-ink: #f0dfa0; --note-rule: #5c5124;
+      --vs-bg: #1f1f1f; --vs-side: #181818; --vs-fg: #cccccc; --vs-muted: #9d9d9d; --vs-border: #2b2b2b; --vs-accent: #0078d4; --vs-accent-fg: #ffffff;
+      --vs-code: #181818; --vs-chip: #2a2d2e;
+      --risk: #f85149; --risk-tint: #3d1d1f; --warn: #d29922; --warn-tint: #3a2e10; --ok: #9aa3b0; --ok-tint: #26292e; --ext: #bc8cff; --ext-tint: #2c2240; --done: #3fb950;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --page: #101318; --ink: #e3e6ed; --ink-soft: #9aa3b5; --rule: #2a2f39; --note: #2b2611; --note-ink: #f0dfa0; --note-rule: #5c5124;
+    --vs-bg: #1f1f1f; --vs-side: #181818; --vs-fg: #cccccc; --vs-muted: #9d9d9d; --vs-border: #2b2b2b; --vs-accent: #0078d4; --vs-accent-fg: #ffffff;
+    --vs-code: #181818; --vs-chip: #2a2d2e;
+    --risk: #f85149; --risk-tint: #3d1d1f; --warn: #d29922; --warn-tint: #3a2e10; --ok: #9aa3b0; --ok-tint: #26292e; --ext: #bc8cff; --ext-tint: #2c2240; --done: #3fb950;
+    color-scheme: dark;
+  }
+
+  body { background: var(--page); color: var(--ink); font: 15px/1.6 var(--sans); padding-inline: 16px; padding-block: 0 64px; }
+  .page { max-width: 1060px; margin: 0 auto; }
+  header.intro { padding-block: 40px 8px; max-width: 70ch; }
+  .eyebrow { font: 500 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-soft); }
+  h1 { font-size: 30px; line-height: 1.2; margin: 10px 0 12px; text-wrap: balance; font-weight: 600; }
+  h2 { font-size: 20px; margin: 0 0 6px; text-wrap: balance; font-weight: 600; }
+  p { margin: 0 0 10px; }
+  .lede { color: var(--ink-soft); }
+  .facts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .fact { font: 13px/1.4 var(--mono); border: 1px solid var(--rule); border-radius: 4px; padding: 4px 8px; color: var(--ink-soft); }
+  .fact b { color: var(--ink); font-weight: 500; }
+
+  section.screen { margin-top: 44px; display: grid; gap: 14px; }
+  .screen-head { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; align-items: baseline; }
+  .step-no { font: 500 13px/1 var(--mono); color: var(--ink-soft); grid-row: span 2; padding-top: 6px; }
+  .screen-head p { color: var(--ink-soft); max-width: 75ch; margin: 0; }
+
+  /* VS Code frame */
+  .frame { background: var(--vs-bg); color: var(--vs-fg); border: 1px solid var(--vs-border); border-radius: 8px; overflow: hidden; font: 13px/1.5 var(--ui); box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 8px 24px rgba(16,19,24,.08); }
+  .tabbar { display: flex; align-items: center; gap: 8px; background: var(--vs-side); border-bottom: 1px solid var(--vs-border); padding: 0 12px; height: 34px; color: var(--vs-muted); font-size: 12.5px; }
+  .tabbar .tab { color: var(--vs-fg); background: var(--vs-bg); border: 1px solid var(--vs-border); border-bottom: none; padding: 6px 12px; margin-top: 6px; border-radius: 4px 4px 0 0; }
+  .frame-body { padding: 16px 18px; }
+  .split { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); }
+  .split > * { min-width: 0; }
+  .split .pane + .pane { border-left: 1px solid var(--vs-border); }
+  .pane { padding: 16px 18px; }
+  .pr-title { font-weight: 600; font-size: 16px; color: var(--vs-fg); }
+  .pr-meta { color: var(--vs-muted); font-size: 12.5px; display: flex; flex-wrap: wrap; gap: 6px 10px; margin-top: 2px; }
+  .mono { font-family: var(--mono); }
+  .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 1px 7px; border-radius: 10px; background: var(--vs-chip); color: var(--vs-fg); white-space: nowrap; }
+  .chip.ext { background: var(--ext-tint); color: var(--ext); border: 1px dashed var(--ext); }
+
+  /* steps */
+  ol.steps { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 2px; }
+  ol.steps li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; padding: 7px 10px; border-radius: 4px; }
+  ol.steps li.active { background: color-mix(in srgb, var(--vs-accent) 10%, transparent); }
+  .ico { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; margin-top: 1px; }
+  .ico.done { border: 1.5px solid var(--done); color: var(--done); }
+  .ico.pending { border: 1.5px solid var(--vs-muted); }
+  .ico.active { border: 2px solid var(--vs-accent); border-right-color: transparent; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .ico.active { animation: none; border-right-color: var(--vs-accent); } }
+  .step-label { font-weight: 500; }
+  .step-detail { color: var(--vs-muted); font-size: 12.5px; }
+  .is-new { font: 500 10px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--vs-accent); border: 1px solid var(--vs-accent); border-radius: 3px; padding: 2px 4px; margin-left: 6px; vertical-align: 1px; }
+
+  table.searches { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12.5px; }
+  .table-wrap { overflow-x: auto; }
+  table.searches th { text-align: left; font-weight: 500; color: var(--vs-muted); border-bottom: 1px solid var(--vs-border); padding: 5px 8px 5px 0; white-space: nowrap; }
+  table.searches td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--vs-border); vertical-align: top; }
+  table.searches td.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  .who { font: 11px/1 var(--mono); padding: 2px 5px; border-radius: 3px; white-space: nowrap; }
+  .who.filos { background: var(--vs-chip); color: var(--vs-fg); }
+  .who.agent { background: color-mix(in srgb, var(--vs-accent) 14%, transparent); color: var(--vs-accent); }
+  .budget { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 12px; color: var(--vs-muted); font-size: 12px; }
+  .meter { display: inline-block; width: 90px; height: 6px; border-radius: 3px; background: var(--vs-chip); vertical-align: 1px; overflow: hidden; }
+  .meter i { display: block; height: 100%; background: var(--vs-accent); }
+
+  /* graph */
+  .graph-svg { width: 100%; height: auto; display: block; }
+  .graph-svg text { font-family: var(--ui); }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--vs-muted); font-size: 12px; margin-top: 10px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+
+  /* verdicts */
+  .verdict { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 3px; letter-spacing: .02em; }
+  .v-break { background: var(--risk-tint); color: var(--risk); }
+  .v-change { background: var(--warn-tint); color: var(--warn); }
+  .v-ok { background: var(--ok-tint); color: var(--ok); }
+
+  .summary h3 { font-size: 15px; margin: 4px 0 4px; font-weight: 600; }
+  .summary .crumbs { color: var(--vs-accent); font-size: 12.5px; }
+  .summary .label { font: 500 11px/1.2 var(--ui); letter-spacing: .06em; text-transform: uppercase; color: var(--vs-muted); margin: 14px 0 6px; }
+  pre.code { background: var(--vs-code); border: 1px solid var(--vs-border); border-radius: 4px; padding: 8px 0; margin: 0; overflow-x: auto; font: 12.5px/1.55 var(--mono); }
+  pre.code span.ln { display: inline-block; width: 3.2em; padding-right: .8em; text-align: right; color: var(--vs-muted); user-select: none; }
+  pre.code .hl { display: block; background: color-mix(in srgb, var(--warn) 16%, transparent); }
+  .src { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; font-size: 12px; color: var(--vs-muted); margin-bottom: 6px; }
+  .src a { color: var(--vs-accent); text-decoration: none; }
+  .btn { font: 500 12.5px/1 var(--ui); border-radius: 3px; padding: 7px 12px; border: 1px solid transparent; cursor: pointer; }
+  .btn.primary { background: var(--vs-accent); color: var(--vs-accent-fg); }
+  .btn.secondary { background: var(--vs-chip); color: var(--vs-fg); border-color: var(--vs-border); }
+  .btn:focus-visible { outline: 2px solid var(--vs-accent); outline-offset: 2px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  details.misses { margin-top: 12px; font-size: 12.5px; }
+  details.misses summary { cursor: pointer; color: var(--vs-muted); }
+  details.misses ul { margin: 6px 0 0; padding-left: 18px; color: var(--vs-muted); }
+
+  /* annotations */
+  .notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+  .note { background: var(--note); color: var(--note-ink); border: 1px solid var(--note-rule); border-radius: 6px; padding: 10px 12px; font-size: 13.5px; line-height: 1.5; }
+  .note b { font-weight: 600; }
+
+  section.decide { margin-top: 52px; border-top: 1px solid var(--rule); padding-top: 24px; }
+  ol.decisions { margin: 12px 0 0; padding-left: 22px; display: grid; gap: 10px; max-width: 80ch; }
+  ol.decisions li::marker { font-family: var(--mono); color: var(--ink-soft); }
+  .opt { color: var(--ink-soft); }
+
+  @media (max-width: 760px) {
+    .split { grid-template-columns: 1fr; }
+    .split .pane + .pane { border-left: none; border-top: 1px solid var(--vs-border); }
+    h1 { font-size: 25px; }
+  }
+</style>
+
+<div class="page">
+  <header class="intro">
+    <div class="eyebrow">Filos · mockup · not built yet</div>
+    <h1>Who does this change reach outside the repo?</h1>
+    <p class="lede">Filos looks for downstream consumers with GitHub code search, at review time, with no index and no clones. Filos runs the searches. The agent judges each match and may ask for a few more searches. It never gets network access itself. These screens use the bundled sample PR, so every repo and line here is example data.</p>
+    <div class="facts">
+      <span class="fact">scope <b>the PR's owner (acme/*)</b></span>
+      <span class="fact">loop <b>agent proposes, Filos runs</b></span>
+      <span class="fact">source <b>gh search code, default branches</b></span>
+    </div>
+  </header>
+
+  <!-- Screen 1: the new step -->
+  <section class="screen" aria-labelledby="s1">
+    <div class="screen-head">
+      <span class="step-no">1</span>
+      <h2 id="s1">A new step after the graph</h2>
+      <p>It starts once the agent has drawn the graph, because the graph says which public pieces changed. You can explore the graph while it runs.</p>
+    </div>
+    <div class="frame">
+      <div class="tabbar"><span class="tab">Filos: Switch to banker's rounding and add invoice discounts</span></div>
+      <div class="frame-body">
+        <div class="pr-title">Switch to banker's rounding and add invoice discounts</div>
+        <div class="pr-meta"><span class="mono">acme/ledger#42</span><span class="mono">feature/bankers-rounding → main</span><span>by dana</span></div>
+        <ol class="steps">
+          <li><span class="ico done">✓</span><div><div class="step-label">Find the pull request</div><div class="step-detail">#42 · 10 files · +249 −19</div></div></li>
+          <li><span class="ico done">✓</span><div><div class="step-label">Get the code</div><div class="step-detail">4079f98 · already here</div></div></li>
+          <li><span class="ico done">✓</span><div><div class="step-label">Claude Code reads the change</div><div class="step-detail">17 nodes · 4 public symbols changed</div></div></li>
+          <li class="active"><span class="ico active" aria-hidden="true"></span><div><div class="step-label">Look for downstream consumers <span class="is-new">new</span></div><div class="step-detail">Round 2 of 3 · Claude asked to search for <span class="mono">totals(</span> wrappers in acme/checkout-web</div>
+            <div class="table-wrap">
+            <table class="searches">
+              <thead><tr><th>Search</th><th>Asked by</th><th>Repos</th><th class="num">Matches</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">roundToCents org:acme</td><td><span class="who filos">Filos</span></td><td>3</td><td class="num">7</td></tr>
+                <tr><td class="mono">Money.multiply OR .multiply( org:acme</td><td><span class="who filos">Filos</span></td><td>2</td><td class="num">11</td></tr>
+                <tr><td class="mono">"@acme/ledger" path:package.json org:acme</td><td><span class="who filos">Filos</span></td><td>4</td><td class="num">4</td></tr>
+                <tr><td class="mono">/invoices discountCode org:acme</td><td><span class="who agent">Claude</span></td><td>1</td><td class="num">2</td></tr>
+                <tr><td class="mono">cartTotal roundToCents repo:acme/checkout-web</td><td><span class="who agent">Claude</span></td><td>…</td><td class="num">…</td></tr>
+              </tbody>
+            </table>
+            </div>
+            <div class="budget">
+              <span>searches 5 of 12 <span class="meter"><i style="width:42%"></i></span></span>
+              <span>files read 9 of 30</span>
+              <span>GitHub allows about 10 searches a minute; Filos paces them</span>
+            </div>
+          </div></li>
+          <li><span class="ico pending"></span><div><div class="step-label">Claude Code writes questions</div><div class="step-detail">waits for the downstream findings, so questions can ask about them</div></div></li>
+        </ol>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="note"><b>Filos searches first, without asking the agent.</b> It searches for every changed exported symbol, plus the package name (repos that depend on <span class="mono">@acme/ledger</span>). For services it would also search HTTP routes, protobuf messages and topic names.</div>
+      <div class="note"><b>The agent asks; Filos decides.</b> Each round the agent may propose up to 4 follow-up searches. Filos checks that each one stays inside the scope and the budget, then runs it. The agent itself never reaches the network.</div>
+      <div class="note"><b>Visible and capped.</b> Every search shows who asked for it. The search and file-read budgets show at all times. Cancel stops the step without losing the graph.</div>
+    </div>
+  </section>
+
+  <!-- Screen 2: graph -->
+  <section class="screen" aria-labelledby="s2">
+    <div class="screen-head">
+      <span class="step-no">2</span>
+      <h2 id="s2">Consumers on the graph, each with a verdict</h2>
+      <p>Each confirmed consumer becomes a node, with the agent's verdict on it. Matches the agent rejected, such as a vendored copy or a mention in docs, are counted but stay off the graph.</p>
+    </div>
+    <div class="frame">
+      <div class="tabbar"><span class="tab">Filos: Switch to banker's rounding and add invoice discounts</span></div>
+      <div class="split">
+        <div class="pane">
+          <svg class="graph-svg" viewBox="0 0 560 330" role="img" aria-label="The money module, with roundToCents and Money.multiply inside it, linked to three downstream repos: checkout-web changes behaviour, payouts-service breaks, reporting is unaffected.">
+            <defs>
+              <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8 z" style="fill:var(--ext)"/></marker>
+            </defs>
+            <!-- module container -->
+            <rect x="12" y="40" width="250" height="230" rx="6" stroke-width="1.2" style="fill:var(--risk-tint);stroke:var(--risk)"/>
+            <text x="26" y="62" font-size="13" font-weight="600" style="fill:var(--vs-fg)">money</text>
+            <text x="74" y="62" font-size="11" style="fill:var(--vs-muted)">high risk · 3 outside</text>
+            <!-- roundToCents -->
+            <rect x="30" y="84" width="214" height="56" rx="4" stroke-width="2" style="fill:var(--vs-bg);stroke:var(--risk)"/>
+            <text x="44" y="106" font-size="12.5" font-weight="600" style="fill:var(--vs-fg);font-family:var(--mono)">roundToCents()</text>
+            <text x="44" y="126" font-size="11" style="fill:var(--vs-muted)">modified · behaviour change</text>
+            <!-- Money.multiply -->
+            <rect x="30" y="172" width="214" height="56" rx="4" stroke-width="1.4" style="fill:var(--vs-bg);stroke:var(--warn)"/>
+            <text x="44" y="194" font-size="12.5" font-weight="600" style="fill:var(--vs-fg);font-family:var(--mono)">Money.multiply()</text>
+            <text x="44" y="214" font-size="11" style="fill:var(--vs-muted)">modified · passes the mode on</text>
+            <!-- edges: consumers point at what they use -->
+            <path d="M330 72 C 290 72, 290 112, 246 112" fill="none" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrow)" style="stroke:var(--ext)"/>
+            <path d="M330 72 C 290 80, 290 196, 246 200" fill="none" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arrow)" style="stroke:var(--ext)"/>
+            <path d="M330 164 C 290 164, 290 120, 246 118" fill="none" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrow)" style="stroke:var(--ext)"/>
+            <path d="M330 256 C 290 256, 290 126, 246 124" fill="none" stroke-width="1.2" stroke-dasharray="5 4" marker-end="url(#arrow)" opacity=".6" style="stroke:var(--ext)"/>
+            <text x="276" y="62" font-size="10.5" style="fill:var(--ext)">2 call sites</text>
+            <!-- consumers -->
+            <g>
+              <rect x="330" y="42" width="218" height="60" rx="4" stroke-dasharray="5 3" stroke-width="2.5" style="fill:var(--ext-tint);stroke:var(--ext)"/>
+              <text x="344" y="64" font-size="12.5" font-weight="600" style="fill:var(--vs-fg)">↗ acme/checkout-web</text>
+              <rect x="344" y="74" width="122" height="18" rx="3" style="fill:var(--warn-tint)"/>
+              <text x="351" y="87" font-size="11" font-weight="600" style="fill:var(--warn)">CHANGES BEHAVIOUR</text>
+            </g>
+            <g>
+              <rect x="330" y="134" width="218" height="60" rx="4" stroke-dasharray="5 3" stroke-width="1.4" style="fill:var(--ext-tint);stroke:var(--ext)"/>
+              <text x="344" y="156" font-size="12.5" font-weight="600" style="fill:var(--vs-fg)">↗ acme/payouts-service</text>
+              <rect x="344" y="166" width="58" height="18" rx="3" style="fill:var(--risk-tint)"/>
+              <text x="351" y="179" font-size="11" font-weight="600" style="fill:var(--risk)">BREAKS</text>
+            </g>
+            <g opacity=".75">
+              <rect x="330" y="226" width="218" height="60" rx="4" stroke-dasharray="5 3" stroke-width="1.2" style="fill:var(--ext-tint);stroke:var(--ext)"/>
+              <text x="344" y="248" font-size="12.5" font-weight="600" style="fill:var(--vs-fg)">↗ acme/reporting</text>
+              <rect x="344" y="258" width="78" height="18" rx="3" style="fill:var(--ok-tint)"/>
+              <text x="351" y="271" font-size="11" font-weight="600" style="fill:var(--ok)">UNAFFECTED</text>
+            </g>
+            <text x="330" y="314" font-size="11" style="fill:var(--vs-muted)">+ 6 matches judged not consumers</text>
+          </svg>
+          <div class="legend">
+            <span><i class="swatch" style="background:var(--risk-tint);outline:1px solid var(--risk)"></i>breaks: will fail or misbehave</span>
+            <span><i class="swatch" style="background:var(--warn-tint);outline:1px solid var(--warn)"></i>changes behaviour: results differ</span>
+            <span><i class="swatch" style="background:var(--ok-tint);outline:1px solid var(--ok)"></i>unaffected</span>
+          </div>
+        </div>
+        <div class="pane summary">
+          <div class="crumbs">Overview › money</div>
+          <h3 class="mono">roundToCents()</h3>
+          <div class="row"><span class="chip">modified</span><span class="chip ext">↗ 3 consumers outside · found by search</span></div>
+          <div class="label">Downstream</div>
+          <div style="display:grid;gap:8px">
+            <div class="row"><span class="verdict v-break">BREAKS</span><span class="mono">payouts-service</span><span style="color:var(--vs-muted)">fee test expects 13¢</span></div>
+            <div class="row"><span class="verdict v-change">CHANGES</span><span class="mono">checkout-web</span><span style="color:var(--vs-muted)">cart totals move 1¢ on ties</span></div>
+            <div class="row"><span class="verdict v-ok">UNAFFECTED</span><span class="mono">reporting</span><span style="color:var(--vs-muted)">rounds whole cents only</span></div>
+          </div>
+          <div class="label">Risk</div>
+          <p style="margin:0;color:var(--vs-muted);font-size:12.5px">High, 0.86. Its <b style="color:var(--vs-fg)">external consumers</b> now come from 3 confirmed call sites, not a hand-kept index. One consumer breaks.</p>
+          <details class="misses">
+            <summary>6 matches judged not consumers</summary>
+            <ul>
+              <li><span class="mono">acme/ledger-legacy</span>: a vendored copy of round.ts</li>
+              <li><span class="mono">acme/docs</span>: mentioned in a changelog</li>
+              <li><span class="mono">acme/checkout-web</span>: a test fixture name, not a call</li>
+              <li>3 more in archived repos</li>
+            </ul>
+          </details>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="note"><b>Downstream impact drives the risk colour,</b> which CLAUDE.md lists as the top signal. A confirmed consumer counts in full; an "unaffected" one adds nothing.</div>
+      <div class="note"><b>Verdicts are worded as outcomes:</b> breaks, changes behaviour, unaffected. They need wording that's easy to scan. This is a first proposal.</div>
+      <div class="note"><b>Default branches only.</b> Code search sees each repo's main branch, not open branches. The graph says "found by search" so nobody reads it as complete.</div>
+    </div>
+  </section>
+
+  <!-- Screen 3: consumer detail -->
+  <section class="screen" aria-labelledby="s3">
+    <div class="screen-head">
+      <span class="step-no">3</span>
+      <h2 id="s3">A consumer, with the code that proves it</h2>
+      <p>Clicking a downstream node shows why the agent reached its verdict, with the call site the verdict rests on. The remote file opens read-only beside the graph, just as pull request files do.</p>
+    </div>
+    <div class="frame">
+      <div class="tabbar"><span class="tab">Filos: Switch to banker's rounding and add invoice discounts</span><span>·</span><span class="mono">totals.ts (acme/checkout-web, read-only)</span></div>
+      <div class="split">
+        <div class="pane summary">
+          <div class="crumbs">Overview › money › roundToCents() ›</div>
+          <h3>↗ acme/checkout-web</h3>
+          <div class="row"><span class="verdict v-change">CHANGES BEHAVIOUR</span><span class="chip">2 call sites</span><span class="chip">sure: high</span></div>
+          <div class="label">Why</div>
+          <p style="margin:0">Line 41 calls <span class="mono">roundToCents(subtotal * rate)</span> without a mode. After the upgrade, a total that lands exactly on a half cent rounds to the even cent: 12.5¢ becomes 12¢, not 13¢. Carts and the invoices from this PR then agree, but only once both are upgraded.</p>
+          <div class="label">Found by</div>
+          <p style="margin:0;font-size:12.5px;color:var(--vs-muted)"><span class="mono">roundToCents org:acme</span> (Filos) · then <span class="mono">cartTotal roundToCents</span> (Claude's follow-up)</p>
+          <div class="label">For your review</div>
+          <div class="row">
+            <button class="btn primary" type="button">Draft a comment about this</button>
+            <button class="btn secondary" type="button">Not a consumer</button>
+          </div>
+        </div>
+        <div class="pane">
+          <div class="src"><span class="mono">acme/checkout-web · src/cart/totals.ts</span><a href="#s3">main @ 9c1e2a7 · open read-only</a></div>
+<pre class="code"><span class="ln">36</span><span>import { roundToCents } from '@acme/ledger';</span>
+<span class="ln">37</span>
+<span class="ln">38</span><span>export function cartTotal(lines: CartLine[], rate: number): number {</span>
+<span class="ln">39</span><span>  const subtotal = lines.reduce((s, l) =&gt; s + l.cents * l.qty, 0);</span>
+<span class="ln">40</span><span>  // tax is computed on the whole cart, like the invoice service</span>
+<span class="hl"><span class="ln">41</span><span>  return subtotal + roundToCents(subtotal * rate);</span></span>
+<span class="ln">42</span><span>}</span></pre>
+          <p style="margin:10px 0 0;font-size:12.5px;color:var(--vs-muted)">Example code from the bundled sample's story, not a real repository.</p>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="note"><b>Evidence first.</b> A verdict always shows the lines it rests on, so you can check it in a few seconds. "Not a consumer" overrules the agent and moves the match to the rejected list.</div>
+      <div class="note"><b>Into the review.</b> "Draft a comment about this" writes a comment for the PR author that names the consumer and the call site. Downstream findings also feed the questions ("which consumer changes, and how?").</div>
+    </div>
+  </section>
+
+  <section class="decide" aria-labelledby="d">
+    <h2 id="d">Decisions for you</h2>
+    <ol class="decisions">
+      <li><b>When it runs.</b> Automatically after the graph (as shown), or only when you click "Look downstream"? <span class="opt">Automatic gives the fullest picture; on-click saves searches and tokens.</span></li>
+      <li><b>Budget defaults.</b> 12 searches, 30 file reads, 3 rounds, up to 4 follow-ups per round. <span class="opt">More finds more but takes longer and costs more tokens. GitHub's code search allows about 10 searches a minute.</span></li>
+      <li><b>Verdict words.</b> Breaks, Changes behaviour, Unaffected, plus a confidence. <span class="opt">Or: Breaking, Affected, Safe. Or a 0–1 impact score.</span></li>
+      <li><b>Questions wait for it?</b> As shown, questions wait for the downstream findings so they can ask about them. <span class="opt">Or write questions at once and add downstream questions later.</span></li>
+      <li><b>Privacy notice.</b> Snippets from other repos go to Claude Code or Codex. Show a one-time notice per org, or rely on the README? <span class="opt">The scope is your own org by default.</span></li>
+    </ol>
+  </section>
+</div>
