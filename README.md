@@ -112,6 +112,7 @@ Filos runs your own agent CLI, so it uses your plan or API account.
 - Pull requests are supported on GitHub only (GitHub Enterprise through the pull request's URL).
 - Filos is tested on Linux, and on macOS by automated tests with stand-in agent CLIs. Windows is untested.
 - The Codex sandbox, which confines Codex to reading the code under review, has been checked on Linux only. On macOS it relies on Codex's own sandbox (Seatbelt) applying Filos's settings, which hasn't been checked yet.
+- On Ubuntu 24.04 and later, the system's restriction on user namespaces can stop Codex's Linux sandbox from starting, and then Codex can't read the code. If Codex reviews fail that way, use Claude Code (**Filos: Choose Agent CLI…**).
 - The graph, questions and comments come from a language model. Check them against the code, as Filos asks you to.
 
 ## Building from source
