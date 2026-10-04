@@ -57,6 +57,16 @@ PR review volume keeps growing, and the reviewer's mental model of the codebase 
 - Per draft comment the user can **accept / reject / amend**, or open a **thread** with the agent to work towards a better final comment for the PR author.
 - Nothing posts without explicit approval.
 
+### Downstream impact (decided 2026-10-04; see docs/mockups/downstream-consumers.html)
+- **How:** found by live GitHub code search at review time. No index to maintain and no downstream clones.
+- **Scope:** by default, the PR's owner or org (excluding the PR's repo itself); more owners can be added.
+- **Who searches:** Filos runs the searches. The agent judges each match and may propose a capped number of follow-up searches, which Filos runs. The agent never gets network access.
+- **Only on click.** After the graph, the steps pause at "Look for downstream consumers" with **Search GitHub** and **Skip**.
+- **Questions wait** for the downstream findings, or for Skip, so they can ask about them.
+- **Narrow before reading.** Searches use GitHub's search qualifiers to target likely consumers, and matches are judged from the fragments search returns. Whole downstream codebases are never read.
+- **Privacy notice:** shown once per org before the first search, because other repos' snippets go to the agent CLI's model provider.
+- **Still open:** search and file-read budgets, and the verdict wording ("Breaks / Changes behaviour / Unaffected" is the current proposal). Settle these after trying it.
+
 ### Architecture
 - **Extension:** TypeScript. The UI lives in a webview.
 - **Agent:** provider-agnostic (Codex, Claude Code, custom), wrapped behind our own thin interface.
