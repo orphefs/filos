@@ -7,6 +7,7 @@
 //   FILOS_E2E_DOWNLOAD=1             run the stable VS Code that @vscode/test-electron downloads,
 //                                    as CI does, even when one is installed at /usr/share/code
 //   FILOS_E2E_VSCODE_VERSION=1.108.2 download and run that VS Code version instead
+//   FILOS_E2E_ZOOM=-2                VS Code's window.zoomLevel (default: -2 on macOS, 0 elsewhere)
 //   node dist/test/runE2E.js --vsix dist/filos.vsix
 //                                    run against the unpacked package instead of the repo, which
 //                                    proves the .vsix carries every file the extension needs
@@ -28,7 +29,8 @@ import { downloadAndUnzipVSCode, runTests } from '@vscode/test-electron';
 const ROOT = resolve(__dirname, '..', '..');
 /** The .deb/.rpm install on Linux. Anywhere else (or without it) test-electron downloads stable. */
 const INSTALLED_VSCODE = '/usr/share/code/code';
-const SCREEN = '1920x1080x24';
+/** Xvfb's screen; FILOS_E2E_SCREEN=1024x768x24 reproduces a small display such as a macOS CI runner's. */
+const SCREEN = process.env.FILOS_E2E_SCREEN?.trim() || '1920x1080x24';
 
 /**
  * VS Code 1.110+ renamed the macOS binary from Contents/MacOS/Electron to the product name ("Code"),
@@ -127,6 +129,11 @@ function makeWorkspace(dir: string): void {
   writeFileSync(join(dir, 'README.md'), '# @acme/ledger\n\nAn uncommitted edit, so the review has something to warn about.\n');
 }
 
+function zoomLevel(): number {
+  const set = Number(process.env.FILOS_E2E_ZOOM);
+  return Number.isFinite(set) && process.env.FILOS_E2E_ZOOM?.trim() ? set : process.platform === 'darwin' ? -2 : 0;
+}
+
 function userSettings(fakeClaude: string, fakeCodex: string, fakeGh: string): Record<string, unknown> {
   return {
     'workbench.startupEditor': 'none',
@@ -141,6 +148,9 @@ function userSettings(fakeClaude: string, fakeCodex: string, fakeGh: string): Re
     'window.restoreWindows': 'none',
     'security.workspace.trust.enabled': false,
     'git.openRepositoryInParentFolders': 'never',
+    // The tests click a layout made for a 1440x900 window. macOS CI runners open VS Code at about
+    // 1024x677, so zoom out there to give the page a similar room (1.2^-2 ≈ 0.69). FILOS_E2E_ZOOM overrides.
+    'window.zoomLevel': zoomLevel(),
     // The agent path runs the fake CLI; its mode is switched per test through process.env.
     'filos.claude.path': fakeClaude,
     // The Codex suite switches filos.provider to codex for its own tests; this is the CLI it runs then.
