@@ -20,15 +20,27 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { delimiter, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runTests } from '@vscode/test-electron';
+import { downloadAndUnzipVSCode, runTests } from '@vscode/test-electron';
 
 /** dist/test/runE2E.js -> repo root. */
 const ROOT = resolve(__dirname, '..', '..');
 /** The .deb/.rpm install on Linux. Anywhere else (or without it) test-electron downloads stable. */
 const INSTALLED_VSCODE = '/usr/share/code/code';
 const SCREEN = '1920x1080x24';
+
+/**
+ * VS Code 1.110+ renamed the macOS binary from Contents/MacOS/Electron to the product name ("Code"),
+ * but @vscode/test-electron 2.x still returns the Electron path (3.x handles it, but needs Node 22).
+ */
+function macExecutable(path: string): string {
+  if (process.platform !== 'darwin' || existsSync(path)) return path;
+  const dir = dirname(path);
+  for (const name of ['Code', 'Code - Insiders']) if (existsSync(join(dir, name))) return join(dir, name);
+  const files = existsSync(dir) ? readdirSync(dir).filter((f) => !f.startsWith('.')) : [];
+  return files.length === 1 ? join(dir, files[0]) : path;
+}
 
 /**
  * Where the run's profile, extensions and workspace go. On macOS os.tmpdir() is a long
@@ -180,12 +192,11 @@ async function main(): Promise<number> {
 
   const version = process.env.FILOS_E2E_VSCODE_VERSION?.trim() || undefined;
   const useInstalled = !version && process.platform === 'linux' && process.env.FILOS_E2E_DOWNLOAD !== '1' && existsSync(INSTALLED_VSCODE);
-  const vscodeExecutablePath = useInstalled ? INSTALLED_VSCODE : undefined;
-  console.log(`Filos e2e: VS Code ${vscodeExecutablePath ?? `${version ?? 'stable'} (downloaded)`} on DISPLAY=${process.env.DISPLAY ?? '(none)'}, extension ${extensionPath}, run dir ${run}`);
+  const vscodeExecutablePath = useInstalled ? INSTALLED_VSCODE : macExecutable(await downloadAndUnzipVSCode(version ?? 'stable'));
+  console.log(`Filos e2e: VS Code ${useInstalled ? INSTALLED_VSCODE : `${version ?? 'stable'} (downloaded) at ${vscodeExecutablePath}`} on DISPLAY=${process.env.DISPLAY ?? '(none)'}, extension ${extensionPath}, run dir ${run}`);
   try {
     await runTests({
       vscodeExecutablePath,
-      ...(version ? { version } : {}),
       extensionDevelopmentPath: extensionPath,
       extensionTestsPath: join(ROOT, 'dist', 'test', 'suite.js'),
       extensionTestsEnv: {
