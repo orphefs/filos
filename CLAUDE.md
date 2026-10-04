@@ -174,7 +174,7 @@ Open question from that run: the agent's orientation and Socrates (which follows
 ### Publishing (prepared 2026-10-04)
 
 - **Name:** "Filos" was free on the VS Code Marketplace (no extension uses that display name), and so was the ID `orphefs.filos` (checked 2026-10-04).
-- **First release:** Orfeas chose an MIT license, a pre-release 0.1.0 marked as preview, and a public repo (github.com/orphefs/philos).
+- **First release:** Orfeas chose an MIT license, a pre-release 0.1.0 marked as preview, and a public repo (github.com/orphefs/filos).
 - **Package:** a listing README with screenshots, an icon (`media/icon.png`, drawn as `media/icon.svg`), a CHANGELOG, and `npm run publish:pre-release`.
 - **Steps for Orfeas:** in [docs/development.md](docs/development.md). Make the repo public and push first, so the listing images resolve.
 - **Not yet published.** The publisher account and its token are Orfeas's.

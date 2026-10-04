@@ -4,7 +4,7 @@
 
 First preview.
 
-- **Install from GitHub.** Download `filos-0.1.0.vsix` from the [Releases page](https://github.com/orphefs/philos/releases) and run **Extensions: Install from VSIX…** in VS Code.
+- **Install from GitHub.** Download `filos-0.1.0.vsix` from the [Releases page](https://github.com/orphefs/filos/releases) and run **Extensions: Install from VSIX…** in VS Code.
 - **macOS and Linux supported** (Windows untested).
 - **Review a pull request.** Point Filos at a GitHub pull request by URL, `owner/repo#n` or number. Filos clones it into its own storage, and a step-by-step progress view runs while the agent works.
 - **Graph of the change.** Modules and functions, with risk tinting computed from countable signals and external consumers called out.

@@ -62,7 +62,7 @@ This is how 0.1.0 is shared before the Marketplace: a pre-release on GitHub Rele
 
 ## Publishing to the Marketplace
 
-1. Make the repository public and push `main`. Relative image links in README.md resolve to `https://github.com/orphefs/philos/raw/HEAD/…` on the Marketplace.
+1. Make the repository public and push `main`. Relative image links in README.md resolve to `https://github.com/orphefs/filos/raw/HEAD/…` on the Marketplace.
 2. Create the `orphefs` publisher at <https://marketplace.visualstudio.com/manage> and get a Personal Access Token with the Marketplace › Manage scope.
 3. Log in once (it asks for the token), then publish a pre-release:
 

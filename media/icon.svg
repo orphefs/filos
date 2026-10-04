@@ -15,6 +15,6 @@
   <circle cx="404" cy="116" r="32" fill="#E5534B"/>
   <circle cx="404" cy="404" r="22" fill="#8FA3D9"/>
   <circle cx="108" cy="404" r="22" fill="#8FA3D9"/>
-  <!-- Phi: philos, friend -->
+  <!-- Phi: filos (φίλος), friend -->
   <text x="256" y="365" text-anchor="middle" font-family="DejaVu Serif" font-weight="bold" font-size="310" fill="#F4EFE6">Φ</text>
 </svg>

@@ -14,12 +14,12 @@
   "pricing": "Free",
   "repository": {
     "type": "git",
-    "url": "https://github.com/orphefs/philos.git"
+    "url": "https://github.com/orphefs/filos.git"
   },
   "bugs": {
-    "url": "https://github.com/orphefs/philos/issues"
+    "url": "https://github.com/orphefs/filos/issues"
   },
-  "homepage": "https://github.com/orphefs/philos#readme",
+  "homepage": "https://github.com/orphefs/filos#readme",
   "engines": {
     "vscode": "^1.100.0"
   },

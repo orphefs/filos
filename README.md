@@ -2,7 +2,7 @@
 
 *Filos* (Greek φίλος, friend) is Socratic pull-request review for VS Code. It shows you what a change does and asks you about it, so that you understand the code you approve rather than skimming the diff.
 
-> **Preview.** Filos is an early prototype. Its screens and wording will change, and agent answers vary from run to run. Feedback is welcome in the [issues](https://github.com/orphefs/philos/issues).
+> **Preview.** Filos is an early prototype. Its screens and wording will change, and agent answers vary from run to run. Feedback is welcome in the [issues](https://github.com/orphefs/filos/issues).
 
 ![The graph of a pull request beside its code, with the risky function highlighted](media/screenshots/graph-and-code.png)
 
@@ -10,7 +10,7 @@
 
 Filos isn't on the VS Code Marketplace yet. You install it from a file:
 
-1. Download `filos-0.1.0.vsix` from the [Releases page](https://github.com/orphefs/philos/releases).
+1. Download `filos-0.1.0.vsix` from the [Releases page](https://github.com/orphefs/filos/releases).
 2. In VS Code, open the Command Palette, run **Extensions: Install from VSIX…** and pick the file.
 
    Or, in a terminal: `code --install-extension filos-0.1.0.vsix`. On macOS, run **Shell Command: Install 'code' command in PATH** in VS Code once first, so that `code` exists.
@@ -57,7 +57,7 @@ You don't have to post anything. Filos posts only after you confirm, and **Expor
 
 On a 14-file pull request, getting the graph and the questions ready took about 10 minutes with Claude Code and cost about $1.50. With Codex it took about 5 minutes. You can explore the graph while the questions are being written. See [Cost and time](#cost-and-time).
 
-**Please tell me how it went.** [Open a Feedback issue](https://github.com/orphefs/philos/issues/new?template=feedback.yml): what helped, what confused or annoyed you, and anything that looked wrong. If something broke, [report a bug](https://github.com/orphefs/philos/issues/new?template=bug.yml) with the log from **View › Output › Filos**. Issues are public, so leave out private code.
+**Please tell me how it went.** [Open a Feedback issue](https://github.com/orphefs/filos/issues/new?template=feedback.yml): what helped, what confused or annoyed you, and anything that looked wrong. If something broke, [report a bug](https://github.com/orphefs/filos/issues/new?template=bug.yml) with the log from **View › Output › Filos**. Issues are public, so leave out private code.
 
 ## Commands
 
