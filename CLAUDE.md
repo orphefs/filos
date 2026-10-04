@@ -77,7 +77,6 @@ PR review volume keeps growing, and the reviewer's mental model of the codebase 
 - Exact location and spec of the dependency index format. Write it down as a short spec.
 - The JSON contract for the graph (nodes, edges, risk, file/line anchors). This should fall out of the UX.
 - How the questionnaire chooses what to ask.
-- Name availability on the VS Code Marketplace (check in VS Code's extension search).
 
 ## Prototype
 
@@ -152,6 +151,14 @@ Open question from that run: the agent's orientation and Socrates (which follows
 - **Host-driven selection:** should selection (from commands or tests) also open modules? The prototype says yes.
 - **Floor for external consumers:** should anything with external consumers be at least medium risk? Today `createInvoiceHandler` (1 consumer) is just under the medium threshold.
 - **Lazy summaries:** summaries are currently written in the comprehension pass. Lazy, cached per-selection summaries are still to come.
+
+### Publishing (prepared 2026-10-04)
+
+- **Name:** "Filos" was free on the VS Code Marketplace (no extension uses that display name), and so was the ID `orphefs.filos` (checked 2026-10-04).
+- **First release:** Orfeas chose an MIT license, a pre-release 0.1.0 marked as preview, and a public repo (github.com/orphefs/philos).
+- **Package:** a listing README with screenshots, an icon (`media/icon.png`, drawn as `media/icon.svg`), a CHANGELOG, and `npm run publish:pre-release`.
+- **Steps for Orfeas:** in [docs/development.md](docs/development.md). Make the repo public and push first, so the listing images resolve.
+- **Not yet published.** The publisher account and its token are Orfeas's.
 
 ## Build order (after UX is settled)
 

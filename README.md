@@ -1,86 +1,102 @@
 # Filos
 
-*Filos* (Greek: friend) is Socratic PR review for VS Code. It leaves you understanding the code, not just the diff.
+*Filos* (Greek φίλος, friend) is Socratic pull-request review for VS Code. It shows you what a change does and asks you about it, so that you understand the code you approve rather than skimming the diff.
 
-**Prototype.** This build covers build-order slices 1–4 and 6 from [CLAUDE.md](CLAUDE.md):
+> **Preview.** Filos is an early prototype. Its screens and wording will change, and agent answers vary from run to run. Feedback is welcome in the [issues](https://github.com/orphefs/philos/issues).
 
-- a graph of the PR's main changes, with risk tinting computed from countable signals,
-- click a node to open the relevant code beside the graph, with unrelated regions folded down to one-line gists,
-- a comprehension pass run by your agent CLI (Claude Code or Codex), validated against the [review-graph contract](docs/graph-contract.md),
-- questions about the change, draft comments you accept, reject, amend or discuss with the agent, and posting to the PR through `gh` ([question-set contract](docs/questions-contract.md)),
-- a whole GitHub pull request, from pointing Filos at it to posting the review, with every agent step run by the agent CLI you choose,
-- didactic mode: territories in fog until you answer your way in, with progress as coverage.
+![The graph of a pull request beside its code, with the risky function highlighted](media/screenshots/graph-and-code.png)
 
-Slices 4 and 6 were built autonomously: their UX is provisional ([review-and-didactic.md](docs/review-and-didactic.md)).
+## How it works
+
+1. **Point Filos at a pull request.** Run **Filos: Review Pull Request…**, then pick one of the workspace repository's open pull requests or paste a URL. Filos clones the code into its own storage, never into your workspace.
+2. **Read the map.** Your agent CLI (Claude Code or Codex) reads the change. Filos draws it as a graph of modules and functions, tinted redder where the risk is higher. The risk colour is computed from countable signals: consumers outside the repo, in-repo callers, public API, missing tests, behaviour changes.
+3. **Open only what matters.** Click a node to open its code beside the graph. Everything unrelated stays folded, with a one-line gist of what it does.
+4. **Answer questions.** Filos asks about the change before and after you read the code. A wrong answer gets a hint, not the answer.
+5. **Turn your answers into comments.** Your judgements draft review comments. Accept, reject or amend each one, or discuss it with the agent.
+6. **Confirm and post.** Filos shows where the review goes and how many comments it holds, and posts through the GitHub CLI only when you confirm.
+
+## Fast or didactic
+
+**Fast** gives you the graph, the questions and the comments, so you can get through a pull request quickly.
+
+**Didactic** turns the change into a map in fog. To enter a module, you first say whether you know it, then predict what the change does. Only then does the code open. Progress is how much of the map you've explored, not points.
+
+![Didactic mode: modules in fog, and the question that opens one](media/screenshots/didactic.png)
+
+![A question with a Socratic hint after a wrong answer](media/screenshots/questions.png)
+
+![A drafted comment, with Accept, Reject, Amend and Discuss](media/screenshots/comments.png)
+
+## Requirements
+
+- VS Code 1.100 or later.
+- An agent CLI, installed and logged in: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`) or the [Codex CLI](https://github.com/openai/codex) (`codex`).
+- For pull requests and posting: the [GitHub CLI](https://cli.github.com) (`gh`), logged in, and `git`.
+
+## Getting started
+
+1. Run **Filos: Review Sample PR (bundled example)**. It opens a hand-written sample review: no agent, no cost.
+2. Run **Filos: Choose Agent CLI…** to pick Claude Code or Codex. It shows whether each is installed and logged in.
+3. Run **Filos: Review Pull Request…** on a real pull request.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| **Filos: Review Pull Request…** | Reviews a GitHub pull request: pick one of the workspace repository's open pull requests, or enter its URL, `owner/repo#123` or a number. The code goes into Filos's own storage, never your workspace. |
-| **Filos: Review Current Branch** | Runs the agent on your workspace's branch compared with its base. |
+| **Filos: Review Pull Request…** | Reviews a GitHub pull request, given as a URL, `owner/repo#123` or a number. |
+| **Filos: Review Current Branch** | Reviews your workspace's branch against its base. |
 | **Filos: Review Current Branch Against…** | The same, against a base branch you choose. |
-| **Filos: Review Sample PR (bundled example)** | Opens the bundled sample PR with a hand-written graph. No agent and no cost. |
-| **Filos: Review Sample PR with Agent** | Runs the agent on the same sample PR. |
-| **Filos: Delete Pull Request Checkouts** | Deletes the clones Filos keeps for pull request reviews, after showing how much space they take. |
-| **Filos: Choose Agent CLI…** | Picks the agent CLI every agent step runs on: Claude Code or Codex. Shows whether each is installed and logged in. |
+| **Filos: Review Sample PR (bundled example)** | The bundled sample review. No agent and no cost. |
+| **Filos: Review Sample PR with Agent** | Runs your agent on the same sample. |
+| **Filos: Choose Agent CLI…** | Chooses Claude Code or Codex for every agent step. |
+| **Filos: Delete Pull Request Checkouts** | Deletes the clones Filos keeps for pull-request reviews. |
 
-The sample also opens from a link: `vscode://orphefs.filos/reviewSample`.
+## Settings
 
-The agent runs through your installed CLI (`claude` or `codex`) and GitHub through `gh`, each with your existing login. Filos never handles credentials.
-
-## Choosing the agent
-
-Filos runs one agent CLI for every agent step: the comprehension graph, the questions, grading your answers, drafting comments and the comment threads. Two are supported:
-
-- **Claude Code** (`claude`), the default. It uses your Claude login: a subscription, an API key, or Bedrock/Vertex settings.
-- **Codex** (`codex`, the OpenAI Codex CLI). It uses your Codex login: a ChatGPT account or an API key.
-
-Run **Filos: Choose Agent CLI…**, or click **Agent: … Change…** in the review header. The list shows, for each CLI, whether Filos found it and whether you are logged in. If you aren't, Filos offers to open the CLI's own login in a terminal. The choice is saved in your user settings as `filos.provider`, and the next agent step uses it, including in a review that is already open. If Filos can't find the agent CLI, the error view offers **Choose agent…** too.
-
-Whichever CLI runs, Filos locks it down to reading: it may read the repository under review but not change it, and its answers are checked against Filos's contracts before anything is shown. See [docs/agent-provider.md](docs/agent-provider.md) for exactly how each CLI is invoked.
-
-### Settings
-
-All of these are read from your user settings only. A repository's `.vscode/settings.json` arrives with the branch under review, so it can't choose which program Filos runs or raise its limits.
+Filos reads these from your user settings only. A repository's `.vscode/settings.json` arrives with the code under review, so it can't choose which program Filos runs or raise its limits.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `filos.provider` | `claude` | The agent CLI: `claude` (Claude Code) or `codex` (Codex). |
 | `filos.claude.path` | `claude` | The `claude` executable: a name on PATH, an absolute path, or `~/…`. |
 | `filos.claude.model` | `sonnet` | Claude Code model alias. Empty uses the CLI's default. |
-| `filos.claude.maxBudgetUsd` | `1` | Spending cap in US dollars per Claude Code call. Claude Code only. |
-| `filos.codex.path` | `codex` | The `codex` executable: a name on PATH, an absolute path, or `~/…`. An npm install's launcher (`codex.cmd` on Windows) is followed to the `codex.exe` it starts; if Filos can't find it, point this at that `codex.exe`. |
-| `filos.codex.model` | empty | Codex model. Empty uses Codex's default. A ChatGPT account can't use every model: one it doesn't support fails with "not supported when using Codex with a ChatGPT account". |
-| `filos.codex.useUserConfig` | `false` | Load `~/.codex/config.toml`, e.g. for a custom model provider such as company SSO. Filos's read-only lockdown still applies. Off, Codex runs with its login and its defaults only. |
-| `filos.agentTimeoutSeconds` | `600` | Stops the agent CLI after this many seconds (at most 3600). Codex reports no dollar cost, so for Codex this is the bound. |
+| `filos.claude.maxBudgetUsd` | `1` | Spending cap in US dollars per Claude Code call. |
+| `filos.codex.path` | `codex` | The `codex` executable. |
+| `filos.codex.model` | empty | Codex model. Empty uses Codex's default. A ChatGPT account can't use every model. |
+| `filos.codex.useUserConfig` | `false` | Load `~/.codex/config.toml`, for example for a company model provider. Filos's read-only lockdown still applies. |
+| `filos.agentTimeoutSeconds` | `600` | Stops the agent CLI after this many seconds. For Codex, which reports no cost, this is the only bound. |
 | `filos.gh.path` | `gh` | The GitHub CLI. |
 
-## The flow
+## Cost and time
 
-1. **Point Filos at a pull request.** Run **Filos: Review Pull Request…** and pick it, or paste its URL.
-2. **Watch the steps.** The panel opens at once with a checklist:
-   - *Find the pull request*: `gh pr view`, e.g. "#9 · 14 files · +440 −176".
-   - *Get the code*: a blobless clone of the repository in Filos's storage (made once, then only fetched), with the pull request's head checked out in a worktree of its own. Hooks never run there. A closed or merged pull request is compared with its base as it was, as GitHub shows it.
-   - *Claude Code reads the change* (or *Codex reads the change*): the comprehension pass, with its live progress.
-   - *Claude Code writes questions*: this one carries on in the side pane once the graph is up.
-   If a step fails, it is marked, with what to do (Retry, or Log in again for gh or the agent CLI). Cancel stops it.
-3. **Explore the graph.** Click a node to open its code beside the graph, folded down to what matters. A pull request's files open read-only, through Filos's own `filos-pr:` file system: no other extension takes the checkout for a project of yours and runs code from it (a linter loading the pull request's `node_modules`, say).
-4. **Answer the questions**, in fast mode or in didactic mode (territories in fog until you answer your way in). The agent grades open answers.
-5. **Shape the comments.** Accept, reject or amend each draft, or open a thread with the agent about it; add your own notes.
-6. **Confirm and post.** Filos shows where the review goes and what it says, and posts it through `gh` only when you confirm. A merged or closed pull request can still be reviewed to learn the code; it is not posted to.
+Filos runs your own agent CLI, so it uses your plan or API account.
 
-**Re-run analysis** fetches the pull request again and keeps your answers and comments. They are kept per pull request, whichever VS Code window you open it from. Several windows can review pull requests at once: each waits for the others when they work on the same clone, and none deletes a checkout another one is showing.
+- **Claude Code** (Sonnet): on a 14-file pull request, reading the change took about 5 minutes and cost about $0.90, and writing the questions took about 4 minutes and $0.60. A graded answer or a comment thread costs a few cents. `filos.claude.maxBudgetUsd` caps each call.
+- **Codex** reports no dollar cost; runs count against your Codex plan's limits.
+- You can explore the graph while the questions are being written. The bundled sample costs nothing.
 
-## Develop
+## Privacy and security
 
-```bash
-npm install
-npm run build        # dist/extension.js, dist/webview.js
-npm run test:unit    # contract, risk, provider (fake CLI), review model
-npm run test:e2e     # real VS Code, headless under xvfb, with fake agent and gh CLIs
-npm run validate:fixture     # the sample graph against the graph contract
-npm run validate:questions   # the sample questions against the question-set contract
-npm run harness      # webview alone in a browser, mocked host
-npm run package      # dist/filos.vsix
-```
+- **Your code goes to your model provider.** Filos sends the pull request's code to Anthropic or OpenAI through the CLI you chose, under your account and its terms. Filos itself has no server and collects no telemetry.
+- **Filos never handles credentials.** It runs your installed `claude`, `codex` and `gh` with the logins you already have.
+- **The agent can only read the code under review:**
+  - Claude Code runs with read-only tools (Read, Grep, Glob), no MCP servers, and without the repository's own Claude settings.
+  - Codex runs in a sandbox that can read only the checkout. It has no network and can't write, and MCP servers, plugins, skills and the repository's `AGENTS.md` are all off.
+  - Either way, every answer is checked against Filos's contracts before you see it.
+- **Pull-request code is isolated.** It is cloned into Filos's storage with git hooks disabled. Its files open read-only, so other extensions don't treat it as one of your projects.
+- **Nothing is posted without your confirmation,** and only the comments you accepted are posted.
+- **Your confidence scores stay private.** How well you know each module is stored only on your machine.
+
+## Known limitations
+
+- Pull requests are supported on GitHub only (GitHub Enterprise through the pull request's URL).
+- The Codex sandbox has been verified on Linux; macOS and Windows are untested.
+- The graph, questions and comments come from a language model. Check them against the code, as Filos asks you to.
+
+## Building from source
+
+See [docs/development.md](docs/development.md).
+
+## License
+
+[MIT](LICENSE)

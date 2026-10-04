@@ -1,20 +1,42 @@
 {
   "name": "filos",
   "displayName": "Filos",
-  "description": "Socratic PR review: understand the change, then review it.",
-  "version": "0.0.1",
+  "description": "Socratic pull-request review: a graph of the change, questions that check your understanding, and comments you approve before anything is posted. Runs on your Claude Code or Codex CLI.",
+  "version": "0.1.0",
   "publisher": "orphefs",
-  "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#1E2A4A",
+    "theme": "dark"
+  },
+  "preview": true,
+  "pricing": "Free",
   "repository": {
     "type": "git",
-    "url": "https://github.com/orphefs/filos"
+    "url": "https://github.com/orphefs/philos.git"
   },
+  "bugs": {
+    "url": "https://github.com/orphefs/philos/issues"
+  },
+  "homepage": "https://github.com/orphefs/philos#readme",
   "engines": {
     "vscode": "^1.100.0"
   },
   "categories": [
+    "AI",
+    "Education",
     "Other"
+  ],
+  "keywords": [
+    "code review",
+    "pull request",
+    "github",
+    "review",
+    "learning",
+    "claude",
+    "codex",
+    "socratic"
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
@@ -138,9 +160,11 @@
     "test:unit": "node --test --import tsx test/unit/*.test.ts",
     "test:e2e": "npm run build && node dist/test/runE2E.js",
     "harness": "npm run build && node scripts/serve-harness.mjs",
-    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository --skip-license -o dist/filos.vsix",
+    "package": "npm run build && vsce package --no-dependencies -o dist/filos.vsix",
     "test:e2e:vsix": "npm run package && node dist/test/runE2E.js --vsix dist/filos.vsix",
-    "smoke:claude": "tsx scripts/smoke-claude.ts --model sonnet --budget 0.5"
+    "smoke:claude": "tsx scripts/smoke-claude.ts --model sonnet --budget 0.5",
+    "package:pre-release": "npm run build && vsce package --pre-release --no-dependencies -o dist/filos.vsix",
+    "publish:pre-release": "npm run build && vsce publish --pre-release --no-dependencies"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
