@@ -261,11 +261,12 @@ stand-in for the Responses API (no OpenAI call), including a user config that se
 `sandbox_mode = "danger-full-access"`: a file outside the repo, a symlink out of the repo and
 `~/.codex/auth.json` all read as "No such file or directory"; `nl -ba`, `rg` and `cat` in the repo
 work; `touch` fails ("Read-only file system"); a socket fails ("Operation not permitted"); `/proc`
-shows only the sandbox's own processes. Windows was not checked. macOS (Seatbelt) is checked only by
+shows only the sandbox's own processes. Windows was not checked. macOS (Seatbelt) is checked by
 CI: `npm run probe:codex-sandbox` (`scripts/probe-codex-sandbox.ts`) runs `codex sandbox -P <profile>`
 with Filos's `sandboxConfig` and checks reads in and out of the repo, `auth.json`, writes and the
-network. It passes all 12 checks on Linux with codex-cli 0.160.0; CI's `codex-sandbox-macos` job runs
-it on macOS.
+network. It passes all 12 checks on Linux and on macOS (CI's `codex-sandbox-macos` job, first run
+2026-10-04) with codex-cli 0.160.0. On macOS, Seatbelt reports blocked reads and writes as
+"Operation not permitted".
 
 ### Skills
 
@@ -487,11 +488,11 @@ user-level only, like the Claude settings. `filos.claude.maxBudgetUsd` doesn't a
 
 - **No dollar cap.** Codex reports tokens, not cost, and has no budget flag. A ChatGPT plan's usage
   limits apply (reported as `budget`); `filos.agentTimeoutSeconds` is the only bound Filos sets.
-- **Reads are confined by the permission profile on Linux** (see "Sandbox"): the repo, the
-  platform's minimal paths and Codex's own files. Commands still run: a script the PR ships can be
-  run, but only with those reads, no writes and no network. macOS and Windows were not checked:
-  Filos passes the same profile there and never `--sandbox`, so how much of it is enforced is up to
-  Codex's sandbox on those systems (Seatbelt; Windows' restricted token).
+- **Reads are confined by the permission profile on Linux and macOS** (see "Sandbox"): the repo,
+  the platform's minimal paths and Codex's own files. Commands still run: a script the PR ships can
+  be run, but only with those reads, no writes and no network. Windows was not checked: Filos
+  passes the same profile there and never `--sandbox`, so how much of it is enforced is up to
+  Codex's sandbox on Windows (a restricted token).
 - `generatedBy.model` is the configured model, or absent: `codex exec --json` doesn't report which
   model answered.
 - Only one tool exists to read with (the shell), so the comprehension pass reads through commands;

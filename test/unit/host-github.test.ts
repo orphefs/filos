@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, beforeEach, describe, it } from 'node:test';
@@ -92,7 +92,8 @@ describe('detectPullRequest (fake gh)', () => {
     const c = calls();
     assert.equal(c.length, 1);
     assert.deepEqual(c[0].argv, ['pr', 'view', '--json', PR_VIEW_FIELDS]);
-    assert.equal(c[0].cwd, scratch);
+    // macOS reports the real path of the temp dir (/private/var/... for /var/...).
+    assert.equal(realpathSync(c[0].cwd), realpathSync(scratch));
     assert.deepEqual(postTargetOf(r), { kind: 'github', repo: 'acme/ledger', number: 42, url: 'https://github.com/acme/ledger/pull/42' });
   });
 
