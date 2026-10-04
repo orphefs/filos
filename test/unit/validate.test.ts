@@ -418,4 +418,52 @@ describe('validateGraph: display text over its limit (repair mode)', () => {
     assert.ok(r.warnings.includes('repaired: cut /nodes/0/label to 80 characters (it had 100)'));
     assert.equal(g.orientation, orientation);
   });
+
+  describe('repair mode: parents', () => {
+    const repairOpts = { readFile: readFixtureFile, repair: true };
+
+    it('re-attaches a node whose parent was never emitted to the nearest container on its id path', () => {
+      const g = fixtureGraph();
+      const child = g.nodes[1];
+      const module = g.nodes.find((n) => n.kind === 'module')!;
+      child.parent = `${module.id}/ghost.py`;
+      assert.equal(validateGraph(g, opts).ok, false, 'strict mode still rejects it');
+      const r = validateGraph(g, repairOpts);
+      assert.ok(r.ok, r.ok ? '' : r.errors.join('\n'));
+      assert.equal(r.graph.nodes[1].parent, module.id);
+      assert.ok(r.warnings.some((w) => /unknown parent ".*ghost\.py"; attached it to/.test(w)), r.warnings.join('\n'));
+    });
+
+    it('re-attaches by the module that owns the file when the id path gives nothing', () => {
+      const g = fixtureGraph();
+      const sibling = g.nodes.find((n) => n.parent && n.anchors.length)!;
+      const top = g.nodes.find((n) => n.id === sibling.parent)!;
+      const module = top.kind === 'module' ? top : g.nodes.find((n) => n.id === top.parent)!;
+      g.nodes.push({ id: 'unrelated-id', label: 'helper', kind: 'function', parent: 'nowhere', change: 'modified', risk: { signals: {}, why: 'x' }, summary: 'x', anchors: [{ ...sibling.anchors[0] }] });
+      const r = validateGraph(g, repairOpts);
+      assert.ok(r.ok, r.ok ? '' : r.errors.join('\n'));
+      assert.equal(r.graph.nodes.find((n) => n.id === 'unrelated-id')!.parent, module.id);
+    });
+
+    it('removes a parent from a module or an external', () => {
+      const g = fixtureGraph();
+      const module = g.nodes.find((n) => n.kind === 'module')!;
+      module.parent = g.nodes.find((n) => n.kind !== 'module' && n.kind !== 'external')!.id;
+      const r = validateGraph(g, repairOpts);
+      assert.ok(r.ok, r.ok ? '' : r.errors.join('\n'));
+      assert.equal(r.graph.nodes.find((n) => n.id === module.id)!.parent, undefined);
+    });
+
+    it('drops a node nothing can contain, with its edges', () => {
+      const g = fixtureGraph();
+      g.nodes.push({ id: 'zzz/orphan', label: 'orphan', kind: 'function', parent: 'zzz/missing', change: 'modified', risk: { signals: {}, why: 'x' }, summary: 'x', anchors: [] });
+      // More than one module, and no anchors: nothing owns it.
+      g.nodes.push({ id: 'second', label: 'second', kind: 'module', change: 'modified', risk: { signals: {}, why: 'x' }, summary: 'x', anchors: [] });
+      g.edges.push({ from: 'zzz/orphan', to: g.nodes[1].id, kind: 'calls' });
+      const r = validateGraph(g, repairOpts);
+      assert.ok(r.ok, r.ok ? '' : r.errors.join('\n'));
+      assert.ok(!r.graph.nodes.some((n) => n.id === 'zzz/orphan'));
+      assert.ok(!r.graph.edges.some((e) => e.from === 'zzz/orphan'));
+    });
+  });
 });

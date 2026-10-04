@@ -85,6 +85,7 @@ export function validateGraph(input: unknown, opts: ValidateOptions = {}): Valid
     const firstRepair = warnings.length;
     repairPaths(graph, opts.repoRoot, warnings);
     repairLines(graph, opts.readFile, warnings);
+    repairParents(graph, warnings);
     // Dropping every range "succeeds" into a review with no code; make it a contract failure instead.
     const after = codeRefs(graph);
     const lost = [before.anchors > 0 && after.anchors === 0 && 'anchor', before.outlines > 0 && after.outlines === 0 && 'file outline'].filter(Boolean);
@@ -304,6 +305,84 @@ function overlapErrors(path: string, regions: { startLine: number; endLine: numb
 }
 
 /** Fixes the line-number slips agents make, in place, recording a warning per repair. */
+/**
+ * Agents sometimes name a parent they never emitted (a file node for a function, say). Re-attach such
+ * a node to its nearest real container, found by id path ("a/b.py/f" → "a/b.py" → "a"), then by the
+ * module that owns its file; drop it only when nothing fits. Modules and externals lose any parent.
+ */
+function repairParents(graph: ReviewGraph, warnings: string[]): void {
+  // Dropping a node can orphan its children, so repeat until nothing more is dropped.
+  for (let pass = 0; pass < 4 && repairParentsOnce(graph, warnings); pass++);
+}
+
+/** One pass; returns whether it dropped any node. */
+function repairParentsOnce(graph: ReviewGraph, warnings: string[]): boolean {
+  const byId = new Map<string, GraphNode>();
+  for (const n of graph.nodes) if (!byId.has(n.id)) byId.set(n.id, n);
+  const isContainer = (id: string | undefined, self: GraphNode) => {
+    const p = id === undefined ? undefined : byId.get(id);
+    return p !== undefined && p !== self && PARENT_KINDS.has(p.kind) ? p : undefined;
+  };
+  const prefixes = (id: string) => {
+    const parts = id.split('/');
+    return parts.slice(0, -1).map((_, i) => parts.slice(0, parts.length - 1 - i).join('/'));
+  };
+  const modules = graph.nodes.filter((n) => n.kind === 'module');
+  const moduleFiles = new Map<string, Set<string>>();
+  const topModule = (n: GraphNode): GraphNode | undefined => {
+    const seen = new Set<string>();
+    let cur: GraphNode | undefined = n;
+    while (cur && cur.parent && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      cur = byId.get(cur.parent);
+    }
+    return cur?.kind === 'module' ? cur : undefined;
+  };
+  for (const n of graph.nodes) {
+    const m = topModule(n);
+    if (!m) continue;
+    const files = moduleFiles.get(m.id) ?? new Set<string>();
+    for (const a of n.anchors) files.add(a.file);
+    moduleFiles.set(m.id, files);
+  }
+  const ownerOf = (n: GraphNode): GraphNode | undefined => {
+    for (const a of n.anchors) {
+      const byFile = modules.find((m) => moduleFiles.get(m.id)?.has(a.file));
+      if (byFile) return byFile;
+      const byPath = modules.filter((m) => a.file === m.id || a.file.startsWith(`${m.id}/`)).sort((x, y) => y.id.length - x.id.length)[0];
+      if (byPath) return byPath;
+    }
+    return modules.length === 1 ? modules[0] : undefined;
+  };
+
+  const dropped = new Set<string>();
+  for (const n of graph.nodes) {
+    if (n.kind === 'module' || n.kind === 'external') {
+      if (n.parent) {
+        warnings.push(`repaired: ${n.kind} "${n.id}" had a parent ("${n.parent}"); removed it`);
+        delete n.parent;
+      }
+      continue;
+    }
+    if (isContainer(n.parent, n)) continue;
+    const was = n.parent;
+    const found =
+      [...(was ? [was, ...prefixes(was)] : []), ...prefixes(n.id)].map((id) => isContainer(id, n)).find(Boolean) ?? ownerOf(n);
+    if (found) {
+      n.parent = found.id;
+      warnings.push(`repaired: node "${n.id}" had ${was ? `${byId.has(was) ? 'parent' : 'unknown parent'} "${was}"` : 'no parent'}; attached it to "${found.id}"`);
+    } else {
+      dropped.add(n.id);
+      warnings.push(`repaired: dropped node "${n.id}", whose parent ${was ? `"${was}"` : ''} doesn't exist and no module owns its code`);
+    }
+  }
+  if (dropped.size) {
+    graph.nodes = graph.nodes.filter((n) => !dropped.has(n.id));
+    graph.edges = graph.edges.filter((e) => !dropped.has(e.from) && !dropped.has(e.to));
+  }
+  return dropped.size > 0;
+}
+
 function repairLines(graph: ReviewGraph, readFile: ValidateOptions['readFile'], warnings: string[]): void {
   const counts = new Map<string, number | undefined>();
   const lineCount = (path: string): number | undefined => {

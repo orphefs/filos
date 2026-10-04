@@ -141,6 +141,14 @@ It was verified live on orphefs/parkfinder#9 (2026-10-03, Sonnet):
 - each graded answer or thread reply: about $0.05 and 8–15 s
 - a 2-comment review was posted for real, with explicit approval.
 
+With Codex (default model on a ChatGPT account, 2026-10-04):
+- comprehension: 179 s, about 159k tokens in (117k cached) and 5k out
+- questions: 81 s
+- grading, drafting and threads: about 6–7 s each
+- no dollar cost is reported.
+
+The first Codex attempt named a parent node it never emitted. The validator now re-attaches such nodes in repair mode instead of rejecting the graph.
+
 Open question from that run: the agent's orientation and Socrates (which follows the counted risk signals) can disagree about which module is riskiest. Which should the guide follow?
 
 ### Open UX questions raised by the prototype
