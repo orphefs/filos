@@ -65,7 +65,8 @@ PR review volume keeps growing, and the reviewer's mental model of the codebase 
 - **Questions wait** for the downstream findings, or for Skip, so they can ask about them.
 - **Narrow before reading.** Searches use GitHub's search qualifiers to target likely consumers, and matches are judged from the fragments search returns. Whole downstream codebases are never read.
 - **Privacy notice:** shown once per org before the first search, because other repos' snippets go to the agent CLI's model provider.
-- **Still open:** search and file-read budgets, and the verdict wording ("Breaks / Changes behaviour / Unaffected" is the current proposal). Settle these after trying it.
+- **Unsearchable repos (option (a), 2026-10-04).** GitHub's search API (still the legacy engine) only covers repos with activity in the past year, searches only default branches, ignores punctuation, and has no regex. So Filos detects dependents that search can't see and shows them as "not searchable", never as safe. The planned detection: read the root package.json of the org's inactive repos directly, which is not a search. A small-repo download fallback (b) is deferred until gaps matter in practice.
+- **Still open** (mockup v3 lists them): search and file-read budgets; the verdict wording ("Breaks / Changes behaviour / Unaffected / Not searchable" is the current proposal); how much an unsearchable dependent weighs in the risk colour; how to cover callers with no package dependency, such as HTTP clients; and the cap on how many inactive repos get checked.
 
 ### Architecture
 - **Extension:** TypeScript. The UI lives in a webview.
