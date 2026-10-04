@@ -40,6 +40,8 @@ export interface ReviewModelOptions {
   confidence: ConfidenceStore;
   /** Open answers are graded and threads answered by the agent; otherwise self-checks. */
   agentAvailable: boolean;
+  /** Display name of the configured agent CLI (snapshot.agentName); it can change while the review is open. */
+  agentName?: string;
   post: PostTarget;
   /** The commit under review (full id), when known: new comments' lines refer to it. */
   headOid?: string;
@@ -180,6 +182,7 @@ export class ReviewModel {
   private status: QuestionsStatus;
   private currentMode: Mode;
   private agent: boolean;
+  private agentLabel?: string;
   private chosenDepth?: Depth;
   private answers = new Map<string, AnswerState>();
   private comments: DraftComment[] = [];
@@ -205,6 +208,7 @@ export class ReviewModel {
     this.status = clone(opts.questionsStatus);
     this.currentMode = opts.mode === 'didactic' ? 'didactic' : 'fast';
     this.agent = opts.agentAvailable;
+    this.agentLabel = cleanAgentName(opts.agentName);
     this.postState = { target: clone(opts.post), status: 'idle' };
     if (typeof opts.headOid === 'string' && OID.test(opts.headOid)) this.headOid = opts.headOid;
     this.useQuestions(opts.questions);
@@ -321,6 +325,7 @@ export class ReviewModel {
       coverage: { explored: territories.filter((t) => t.explored).length, total: territories.length },
       questionsStatus: this.status,
       agentAvailable: this.agent,
+      ...(this.agentLabel ? { agentName: this.agentLabel } : {}),
       post: this.postState,
     };
     if (this.gate) {
@@ -608,7 +613,8 @@ export class ReviewModel {
     return true;
   }
 
-  applyEvaluation(questionId: string, result: EvaluationResult): ReviewEffect {
+  /** `agentName`: the agent CLI that graded it, stored with the reply (the reviewer may switch CLI later). */
+  applyEvaluation(questionId: string, result: EvaluationResult, agentName?: string): ReviewEffect {
     const state = this.answers.get(questionId);
     const last = state?.attempts[state.attempts.length - 1];
     if (!state?.pending || !last) return NO_EFFECT; // stale: nothing is waiting for it
@@ -618,6 +624,9 @@ export class ReviewModel {
     last.verdict = verdict;
     last.reply = typeof result.reply === 'string' ? result.reply.trim() : '';
     last.by = 'agent';
+    const name = cleanAgentName(agentName);
+    if (name) last.agentName = name;
+    else delete last.agentName;
     const n = state.attempts.length;
     const q = this.findQuestion(questionId);
     // A first wrong attempt gets a hint and another try. Otherwise the reply explains, and it's done.
@@ -668,10 +677,12 @@ export class ReviewModel {
     return NO_EFFECT;
   }
 
-  applyThreadReply(commentId: string, reply: ThreadReply): ReviewEffect {
+  /** `agentName`: the agent CLI that replied, stored with the message. */
+  applyThreadReply(commentId: string, reply: ThreadReply, agentName?: string): ReviewEffect {
     const c = this.comments.find((x) => x.id === commentId);
     if (!c?.threadPending) return NO_EFFECT;
-    const msg: ThreadMessage = { role: 'agent', text: typeof reply?.reply === 'string' ? reply.reply.trim() : '' };
+    const name = cleanAgentName(agentName);
+    const msg: ThreadMessage = { role: 'agent', text: typeof reply?.reply === 'string' ? reply.reply.trim() : '', ...(name ? { agentName: name } : {}) };
     const proposal = typeof reply?.proposal === 'string' ? reply.proposal.trim() : '';
     if (proposal) msg.proposal = proposal;
     c.thread.push(msg);
@@ -680,24 +691,27 @@ export class ReviewModel {
   }
 
   /** The thread reply failed: `message` (already safe, plain text) is shown in the thread as the agent's turn. */
-  failThread(commentId: string, message: string): ReviewEffect {
+  failThread(commentId: string, message: string, agentName?: string): ReviewEffect {
     const c = this.comments.find((x) => x.id === commentId);
     if (!c?.threadPending) return NO_EFFECT;
-    c.thread.push({ role: 'agent', text: typeof message === 'string' ? message : '' });
+    const name = cleanAgentName(agentName);
+    c.thread.push({ role: 'agent', text: typeof message === 'string' ? message : '', ...(name ? { agentName: name } : {}) });
     delete c.threadPending;
     return NO_EFFECT;
   }
 
   /** New comments from the agent's draftComments task. Exact repeats of existing comments are skipped. */
-  applyAgentDrafts(seeds: readonly AgentDraftSeed[]): ReviewEffect {
+  /** `agentName`: the agent CLI that drafted them, stored with each comment. */
+  applyAgentDrafts(seeds: readonly AgentDraftSeed[], agentName?: string): ReviewEffect {
     this.draftingPending = false;
+    const name = cleanAgentName(agentName);
     for (const s of Array.isArray(seeds) ? seeds : []) {
       const seed = cleanSeed(s);
       if (!seed) continue;
       const dup = this.comments.some((c) => c.body.trim() === seed.body && c.file === seed.file && c.line === seed.line);
       if (dup) continue;
       const nodeId = typeof s.nodeId === 'string' && this.index.byId.has(s.nodeId) ? s.nodeId : undefined;
-      this.addComment({ ...(nodeId ? { nodeId } : {}), ...seed, origin: { kind: 'agent' } });
+      this.addComment({ ...(nodeId ? { nodeId } : {}), ...seed, origin: { kind: 'agent', ...(name ? { agentName: name } : {}) } });
     }
     return NO_EFFECT;
   }
@@ -766,6 +780,12 @@ export class ReviewModel {
   /** E.g. the agent's login expired: later open answers fall back to self-checks. */
   setAgentAvailable(available: boolean): ReviewEffect {
     this.agent = available;
+    return NO_EFFECT;
+  }
+
+  /** The reviewer chose another agent CLI: later agent steps go to it, and the wording follows. */
+  setAgentName(name: string | undefined): ReviewEffect {
+    this.agentLabel = cleanAgentName(name);
     return NO_EFFECT;
   }
 
@@ -983,6 +1003,16 @@ function cleanSeed(seed: CommentSeed | undefined): Pick<DraftComment, 'file' | '
 
 // ---- persisted state, read defensively ---------------------------------------------------------
 
+/** One short line (it is shown in sentences like "Codex is replying…"), or undefined. */
+function cleanAgentName(name: unknown): string | undefined {
+  if (typeof name !== 'string') return undefined;
+  const flat = name
+    .replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '')
+    .replace(/[\s\x00-\x1f\x7f]+/g, ' ')
+    .trim();
+  return flat ? flat.slice(0, 40).trim() : undefined;
+}
+
 function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
@@ -993,6 +1023,8 @@ function parseAttempt(v: unknown): Attempt | undefined {
   if (!isObj(v) || !str(v.at) || !str(v.reply) || !VERDICTS.includes(v.verdict as Verdict)) return undefined;
   if (v.by !== 'choice' && v.by !== 'agent' && v.by !== 'self') return undefined;
   const a: Attempt = { at: v.at, verdict: v.verdict as Verdict, reply: v.reply, by: v.by };
+  const name = v.by === 'agent' ? cleanAgentName(v.agentName) : undefined;
+  if (name) a.agentName = name;
   if (str(v.choiceId)) a.choiceId = v.choiceId;
   if (str(v.text)) a.text = v.text;
   return a;
@@ -1021,12 +1053,16 @@ function parseComment(v: unknown): DraftComment | undefined {
   const o = v.origin;
   let origin: DraftComment['origin'];
   if (isObj(o) && o.kind === 'question' && str(o.questionId)) origin = { kind: 'question', questionId: o.questionId, ...(str(o.choiceId) ? { choiceId: o.choiceId } : {}) };
-  else if (isObj(o) && (o.kind === 'agent' || o.kind === 'note')) origin = { kind: o.kind };
+  else if (isObj(o) && o.kind === 'agent') {
+    const name = cleanAgentName(o.agentName);
+    origin = { kind: 'agent', ...(name ? { agentName: name } : {}) };
+  } else if (isObj(o) && o.kind === 'note') origin = { kind: 'note' };
   else return undefined;
   const thread: ThreadMessage[] = [];
   for (const m of Array.isArray(v.thread) ? v.thread : []) {
     if (!isObj(m) || (m.role !== 'user' && m.role !== 'agent') || !str(m.text)) continue;
-    thread.push({ role: m.role, text: m.text, ...(m.role === 'agent' && str(m.proposal) ? { proposal: m.proposal } : {}) });
+    const name = m.role === 'agent' ? cleanAgentName(m.agentName) : undefined;
+    thread.push({ role: m.role, text: m.text, ...(m.role === 'agent' && str(m.proposal) ? { proposal: m.proposal } : {}), ...(name ? { agentName: name } : {}) });
   }
   const c: DraftComment = { id: v.id, body: v.body, severity: v.severity as CommentSeverity, origin, status: v.status as CommentStatus, amended: v.amended === true, thread };
   if (str(v.nodeId)) c.nodeId = v.nodeId;

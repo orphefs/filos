@@ -10,6 +10,7 @@ const ACTION_LABEL: Record<ErrorAction, string> = {
   login: 'Log in again',
   retry: 'Retry',
   useFixture: 'Show sample instead',
+  chooseAgent: 'Choose agent…',
 };
 
 type StepState = LoadingStep['state'];

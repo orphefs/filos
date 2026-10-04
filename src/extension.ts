@@ -33,6 +33,8 @@ export function activate(context: vscode.ExtensionContext): FilosApi {
     // A GitHub pull request, by URL, owner/repo#n or number (an optional string argument), or picked.
     command('filos.reviewPullRequest', (arg?: unknown) => controller.reviewPullRequest(arg)),
     command('filos.cleanPullRequestCheckouts', () => controller.cleanPullRequestCheckouts()),
+    // Claude Code or Codex for every agent step; written to the user setting filos.provider.
+    command('filos.chooseAgent', () => controller.chooseAgent()),
     command('filos.reviewSample', () => controller.reviewSample()),
     command('filos.reviewSampleWithAgent', () => controller.reviewSampleWithAgent()),
     command('filos.reviewCurrentBranch', (arg?: unknown) => controller.reviewCurrentBranch(branchOptions(arg))),

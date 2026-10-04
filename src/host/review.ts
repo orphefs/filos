@@ -14,10 +14,11 @@ import type { ErrorAction, GraphSource, HostToWebview, LoadingStep, ReviewAction
 import type { ReviewSnapshot } from '../review/types';
 import type { Held } from './checkoutLocks';
 import { CodePane } from './codePane';
-import { readGhPath, readProviderConfig } from './config';
+import { chooseAgent } from './agentPicker';
+import { pathSettingOf, PROVIDER_NAMES, readGhPath, readProviderConfig, readProviderId, type ProviderId } from './config';
 import { repoKeyFor } from './confidenceStore';
 import { DEP_INDEX, diffTouchesIndex, readDependencyIndex } from './depIndex';
-import { describeAgentError, type ErrorView } from './errors';
+import { describeAgentError, errorContext, type ErrorView } from './errors';
 import { OutlineFoldingProvider } from './folding';
 import * as git from './git';
 import { detectPullRequest, HOST, type PullRequestLookup } from './github';
@@ -46,6 +47,7 @@ import { ReviewState } from './reviewState';
 import { materialiseSample, type SampleRepo } from './sample';
 import { migrateStored, ReviewSession, type RenderedInfo, type ReviewTarget } from './session';
 import { LoadingSteps } from './steps';
+import { usageNote } from './usage';
 
 interface AgentInput {
   diff: string;
@@ -86,8 +88,14 @@ export class ReviewController implements vscode.Disposable {
   private lastPullRequest?: { input: PullRequestInput; workspaceRoot?: string };
   private loginFor: LoginTarget = { kind: 'agent' };
   private agentRun?: AbortController;
-  private lastProvider?: AgentProvider;
+  /**
+   * The provider a review's agent calls share, for as long as the settings stay the same: a
+   * provider's own caches (Codex's list of features to turn off) then last the review rather than
+   * one call. Dropped when an agent run starts, so a CLI updated meanwhile is asked again.
+   */
+  private shared?: { key: string; provider: AgentProvider };
   private waiters: RenderWaiter[] = [];
+  private readonly disposables: vscode.Disposable[] = [];
   /** Questionnaire, comments and didactic state of the loaded graph. */
   private review?: ReviewState;
   /**
@@ -113,6 +121,43 @@ export class ReviewController implements vscode.Disposable {
     this.folding = new OutlineFoldingProvider((uri) => this.session?.outlineFor(uri));
     this.panel = new ReviewPanel(context.extensionUri, { onMessage: (m) => this.onMessage(m), onDispose: () => this.onPanelClosed() }, log);
     this.codePane = new CodePane({ panel: () => this.panel.webviewPanel, log });
+    // Another agent CLI chosen (or its settings changed): an open review's later agent steps use it,
+    // so its wording ("Codex is replying…") follows at once.
+    this.disposables.push(
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (!['filos.provider', 'filos.claude', 'filos.codex'].some((k) => e.affectsConfiguration(k))) return;
+        this.shared = undefined;
+        this.log.info(`agent settings changed: agent steps now run on ${this.agentName()}`);
+        this.review?.agentChanged();
+      }),
+    );
+  }
+
+  /** Display name of the agent CLI the settings choose now (the provider's own name). Never throws. */
+  agentName(): string {
+    try {
+      return createProvider(readProviderConfig()).displayName;
+    } catch {
+      return PROVIDER_NAMES[readProviderId()];
+    }
+  }
+
+  /**
+   * "Choose Agent CLI…": Claude Code or Codex, each with whether it is installed and logged in. A
+   * switch made while the panel shows an error (the old CLI wasn't found, say) offers Retry.
+   */
+  async chooseAgent(): Promise<void> {
+    const failed = this.session?.status.kind === 'error';
+    await chooseAgent({
+      log: this.log,
+      openLogin: (id) => this.openAgentLogin(id),
+      retry: failed
+        ? () => {
+            if (this.session?.status.kind !== 'error') return;
+            void this.handleAction('retry').catch((e: unknown) => this.showUnexpected('retry', e));
+          }
+        : undefined,
+    });
   }
 
   get currentSession(): ReviewSession | undefined {
@@ -411,6 +456,9 @@ export class ReviewController implements vscode.Disposable {
       case 'useFixture':
         await this.reviewSample();
         return;
+      case 'chooseAgent':
+        await this.chooseAgent();
+        return;
       case 'rerun': {
         const t = this.session?.target;
         if (t?.kind === 'branch') await this.reviewCurrentBranch(this.lastBranchOptions);
@@ -442,10 +490,7 @@ export class ReviewController implements vscode.Disposable {
         return;
       case 'action':
         // The webview has no spinner of its own for these: a failure must be shown, not only logged.
-        void this.handleAction(msg.action).catch((e: unknown) => {
-          this.log.error(`action ${msg.action}: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
-          void vscode.window.showErrorMessage(`Filos: ${e instanceof Error ? e.message : String(e)}`, 'Show Log').then((c) => c && this.log.show());
-        });
+        void this.handleAction(msg.action).catch((e: unknown) => this.showUnexpected(`action ${msg.action}`, e));
         return;
       case 'rendered': {
         if (!s) return;
@@ -517,10 +562,9 @@ export class ReviewController implements vscode.Disposable {
         },
         provider: () => {
           const config = readProviderConfig();
-          const provider = createProvider({ ...config, onRawLine: (line) => this.log.trace(`[cli] ${line.length > 2000 ? line.slice(0, 2000) + '…' : line}`) });
-          this.lastProvider = provider;
-          return { provider, config };
+          return { provider: this.providerFor(config), config };
         },
+        agentName: () => this.agentName(),
         openLogin: () => this.openLoginTerminal({ kind: 'agent' }),
         ghPath: () => readGhPath(),
         confirm: async (message, detail, action) => {
@@ -608,12 +652,13 @@ export class ReviewController implements vscode.Disposable {
     let provider: AgentProvider;
     try {
       cfg = readProviderConfig();
-      provider = createProvider({ ...cfg, onRawLine: (line) => this.log.trace(`[cli] ${line.length > 2000 ? line.slice(0, 2000) + '…' : line}`) });
+      // A new agent run asks the CLI afresh (it may have been updated since the last review).
+      this.shared = undefined;
+      provider = this.providerFor(cfg);
     } catch (e) {
-      this.fail(session, 'Filos could not set up the agent.', ['useFixture'], e instanceof Error ? e.message : String(e));
+      this.fail(session, 'Filos could not set up the agent.', ['chooseAgent', 'useFixture'], e instanceof Error ? e.message : String(e));
       return;
     }
-    this.lastProvider = provider;
     const abort = new AbortController();
     this.agentRun = abort;
     const isCurrent = () => this.agentRun === abort && this.session === session;
@@ -656,19 +701,12 @@ export class ReviewController implements vscode.Disposable {
         },
       );
       if (!isCurrent()) return;
-      const cost = result.costUsd !== undefined ? `, $${result.costUsd.toFixed(3)}` : '';
-      this.log.info(`agent finished in ${Math.round((result.durationMs ?? Date.now() - started) / 1000)} s${cost}`);
+      this.log.info(`agent finished in ${Math.round((result.durationMs ?? Date.now() - started) / 1000)} s${usageNote(result)}`);
       this.loadGraph(session, result.graph, 'agent', [...input.warnings, ...result.warnings]);
     } catch (e) {
       if (!isCurrent()) return; // superseded by a newer review: that one owns the view now
       this.loginFor = { kind: 'agent' };
-      const view = describeAgentError(e, {
-        providerName: provider.displayName,
-        loginCommand: provider.loginCommand,
-        claudePath: cfg.claudePath,
-        timeoutSeconds: cfg.timeoutSeconds,
-        maxBudgetUsd: cfg.maxBudgetUsd,
-      });
+      const view = describeAgentError(e, errorContext(provider, cfg));
       const kind = e instanceof ProviderError ? e.kind : 'unexpected';
       this.log.error(`agent ${kind}: ${e instanceof Error ? e.message : String(e)}${e instanceof ProviderError && e.detail ? `\n${e.detail}` : ''}`);
       this.fail(session, view.message, view.actions, view.detail);
@@ -713,12 +751,12 @@ export class ReviewController implements vscode.Disposable {
     try {
       gh = readGhPath();
       cfg = readProviderConfig();
-      provider = createProvider({ ...cfg, onRawLine: (line) => this.log.trace(`[cli] ${line.length > 2000 ? line.slice(0, 2000) + '…' : line}`) });
+      this.shared = undefined;
+      provider = this.providerFor(cfg);
     } catch (e) {
       void vscode.window.showErrorMessage(`Filos: ${safeProgressText(errorText(e), 240)}`);
       return;
     }
-    this.lastProvider = provider;
     const root = this.pullRequestStorage;
     const label = describeInput(input);
     const steps = new LoadingSteps(['Find the pull request', 'Get the code', `${provider.displayName} reads the change`, `${provider.displayName} writes questions`]);
@@ -850,8 +888,7 @@ export class ReviewController implements vscode.Disposable {
           },
         });
         if (!isCurrent()) return;
-        const cost = result.costUsd !== undefined ? `, $${result.costUsd.toFixed(3)}` : '';
-        this.log.info(`agent finished in ${Math.round((result.durationMs ?? Date.now() - started) / 1000)} s${cost}`);
+        this.log.info(`agent finished in ${Math.round((result.durationMs ?? Date.now() - started) / 1000)} s${usageNote(result)}`);
         steps.done(PR_STEP.read);
         // 4. Questions: ReviewState starts them with the graph and shows their progress itself.
         steps.start(PR_STEP.questions);
@@ -891,7 +928,7 @@ export class ReviewController implements vscode.Disposable {
       return { message: `Something went wrong in Filos while ${what}: ${safeProgressText(errorText(e), 200)}`, detail: e instanceof Error ? (e.stack ?? e.message) : String(e), actions: ['retry'] };
     }
     this.loginFor = { kind: 'agent' };
-    const view = describeAgentError(e, { providerName: provider.displayName, loginCommand: provider.loginCommand, claudePath: cfg.claudePath, timeoutSeconds: cfg.timeoutSeconds, maxBudgetUsd: cfg.maxBudgetUsd });
+    const view = describeAgentError(e, errorContext(provider, cfg));
     // "Show sample instead" only helps when the agent can't run at all: then the sample shows what Filos does.
     const keepSample = e instanceof ProviderError && e.kind === 'notInstalled';
     return { ...view, actions: view.actions.filter((a) => a !== 'useFixture' || keepSample) };
@@ -929,18 +966,23 @@ export class ReviewController implements vscode.Disposable {
    * (PowerShell in particular) has to parse a path with spaces.
    */
   private openLoginTerminal(target: LoginTarget): void {
-    if (target.kind === 'gh') {
-      this.openGhLoginTerminal(target.host);
-      return;
-    }
+    if (target.kind === 'gh') this.openGhLoginTerminal(target.host);
+    else this.openAgentLogin();
+  }
+
+  /**
+   * The agent CLI's own login: provider `id`'s, by default the one the settings choose now (the
+   * one Retry would run, even if an earlier run used another).
+   */
+  private openAgentLogin(id: ProviderId = readProviderId()): void {
     let provider: AgentProvider;
     try {
-      provider = this.lastProvider ?? createProvider(readProviderConfig());
+      provider = createProvider(readProviderConfig(id));
     } catch (e) {
-      void vscode.window.showErrorMessage(`Filos: ${e instanceof Error ? e.message : String(e)}`);
+      void vscode.window.showErrorMessage(`Filos: ${safeProgressText(errorText(e), 240)}`);
       return;
     }
-    const name = 'Filos login';
+    const name = `Filos: ${provider.displayName} login`;
     const running = vscode.window.terminals.find((t) => t.name === name && t.exitStatus === undefined);
     if (running) {
       running.show();
@@ -949,7 +991,7 @@ export class ReviewController implements vscode.Disposable {
     const { command, args } = provider.login;
     const shellPath = resolveCommand(command);
     if (!shellPath) {
-      void vscode.window.showErrorMessage(`Filos: can't find the ${provider.displayName} CLI ("${command}") on PATH. Install it, or set "filos.claude.path".`);
+      void vscode.window.showErrorMessage(`Filos: can't find the ${provider.displayName} CLI ("${safeProgressText(command, 120)}") on PATH. Install it, or set "${pathSettingOf(id)}".`);
       return;
     }
     // Home, not the repo under review, so nothing in the PR's checkout can shape the login.
@@ -974,7 +1016,23 @@ export class ReviewController implements vscode.Disposable {
     this.folding.refresh();
   }
 
+  /** The shared provider for these settings, made (with raw output to the log) when they changed. */
+  private providerFor(cfg: ProviderConfig): AgentProvider {
+    const key = JSON.stringify(cfg);
+    if (this.shared?.key !== key) {
+      this.shared = { key, provider: createProvider({ ...cfg, onRawLine: (line) => this.log.trace(`[cli] ${line.length > 2000 ? line.slice(0, 2000) + '…' : line}`) }) };
+    }
+    return this.shared.provider;
+  }
+
+  /** A failure nothing else reports: logged, and shown once with a way to the log. */
+  private showUnexpected(what: string, e: unknown): void {
+    this.log.error(`${what}: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
+    void vscode.window.showErrorMessage(`Filos: ${e instanceof Error ? e.message : String(e)}`, 'Show Log').then((c) => c && this.log.show());
+  }
+
   dispose(): void {
+    for (const d of this.disposables.splice(0)) d.dispose();
     this.cancelAgent();
     this.endReview();
     this.releaseLease();

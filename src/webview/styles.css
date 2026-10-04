@@ -1438,6 +1438,38 @@ body.vscode-high-contrast-light .node.is-selected .ring {
 .coverage-bar::-webkit-progress-value {
   background: var(--vscode-progressBar-background, var(--filos-focus));
 }
+/* Which agent CLI runs the agent steps: quiet, at the end of the row, a button to change it. It
+   takes only what the row has left (cut short with an ellipsis), so it never adds a row of its own
+   unless the row is nearly full. */
+.agent-wrap {
+  flex: 1 1 0;
+  min-width: 7em;
+  display: flex;
+  justify-content: flex-end;
+}
+.filos .agent-button {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 2px 6px;
+  font-size: 12px;
+  color: var(--filos-fg);
+}
+.filos .agent-button:hover {
+  background: var(--filos-hover);
+  border-color: var(--filos-border);
+}
+.agent-label,
+.agent-button .caret {
+  color: var(--filos-muted);
+}
+.agent-button .caret {
+  margin-left: 6px;
+  font-size: 10px;
+}
 
 /* ---- side pane: tabs, panels ------------------------------------------------------------ */
 

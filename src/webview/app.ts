@@ -144,6 +144,7 @@ export class App {
     this.controls = new ReviewControls({
       setMode: (mode) => this.postReview({ type: 'setMode', mode }),
       setDepth: (depth: Depth) => this.postReview({ type: 'setDepth', depth }),
+      chooseAgent: () => post({ type: 'action', action: 'chooseAgent' }),
     });
     this.pane = new ReviewPane(
       this.summaryEl,

@@ -94,9 +94,27 @@ export function isPosted(c: DraftComment, ui: PaneUi): boolean {
   return (c as DraftComment & { posted?: boolean }).posted === true || ui.postedIds.has(c.id);
 }
 
-/** "Uses Claude Code · small cost": every button that calls the agent says so. */
-export function costNote(id: string): HTMLElement {
-  return h('span', { class: 'cost-note', id }, 'Uses Claude Code · small cost');
+/**
+ * The agent CLI the review's agent steps go to ("Claude Code", "Codex"), for sentences: the host's
+ * name for it, else "the agent". `start` capitalises it for the start of a sentence.
+ */
+export function agentName(review: Pick<ReviewSnapshot, 'agentName'> | undefined, start = false): string {
+  const raw = typeof review?.agentName === 'string' ? review.agentName.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '').replace(/[\s\x00-\x1f\x7f]+/g, ' ').trim().slice(0, 40) : '';
+  const name = raw || 'the agent';
+  return start ? name.charAt(0).toUpperCase() + name.slice(1) : name;
+}
+
+/**
+ * The agent CLI that wrote something (a reply, feedback, a draft), as stored with it when it was
+ * written: switching CLI later doesn't relabel it. Older reviews stored none: "the agent".
+ */
+export function writtenBy(name: string | undefined, start = false): string {
+  return agentName({ agentName: name }, start);
+}
+
+/** "Uses Codex · small cost": every button that calls the agent says so. */
+export function costNote(id: string, review: Pick<ReviewSnapshot, 'agentName'> | undefined): HTMLElement {
+  return h('span', { class: 'cost-note', id }, `Uses ${agentName(review)} · small cost`);
 }
 
 export function spinnerLine(text: string): HTMLElement {

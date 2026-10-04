@@ -385,3 +385,34 @@ describe('validateQuestionSet', () => {
     });
   });
 });
+
+describe('validateQuestionSet: schema problems confined to questions (repair mode)', () => {
+  it('drops just the questions the schema errors point into, with a warning each; strict mode still fails', () => {
+    const set = sampleQuestions() as unknown as { questions: Record<string, unknown>[] };
+    const n = set.questions.length;
+    const withChoices = set.questions.findIndex((q) => Array.isArray(q.choices));
+    const long = set.questions[withChoices].id as string;
+    (set.questions[withChoices].choices as Record<string, unknown>[])[0].explain = 'x'.repeat(801);
+    const last = n - 1;
+    set.questions[last].prompt = '';
+    const lastId = set.questions[last].id as string;
+    assert.equal(validateQuestionSet(set, graph, opts).ok, false);
+    const r = validateQuestionSet(set, graph, repairOpts);
+    assert.ok(r.ok, r.ok ? '' : r.errors.join('\n'));
+    assert.equal(r.value.questions.length, n - 2);
+    assert.ok(!r.value.questions.some((q) => q.id === long || q.id === lastId));
+    assert.ok(r.warnings.some((w) => w === `repaired: dropped question "${long}", which broke the question-set schema (/choices/0/explain must NOT have more than 800 characters)`), r.warnings.join('\n'));
+    assert.ok(r.warnings.some((w) => w.startsWith(`repaired: dropped question "${lastId}"`) && w.includes('/prompt must NOT have fewer than 1 characters')), r.warnings.join('\n'));
+    assert.equal((set.questions[withChoices].choices as Record<string, unknown>[])[0].explain, 'x'.repeat(801), 'input untouched');
+  });
+
+  it('a problem outside the questions, or in every question, still fails the set', () => {
+    const why = sampleQuestions();
+    why.depth.why = 'w'.repeat(301);
+    assert.equal(validateQuestionSet(why, graph, repairOpts).ok, false);
+    const all = sampleQuestions();
+    for (const q of all.questions) q.prompt = '';
+    assert.equal(validateQuestionSet(all, graph, repairOpts).ok, false);
+    assert.equal(validateQuestionSet({ questions: 'none' }, graph, repairOpts).ok, false);
+  });
+});

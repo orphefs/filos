@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from '
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { createProvider, ProviderError, type ProviderConfig } from '../../src/agent';
+import { createProvider, ProviderError, type ClaudeProviderConfig } from '../../src/agent';
 import type { AgentProvider, AskResult } from '../../src/agent/provider';
 import type { ReviewGraph } from '../../src/contract/graph';
 import type { Question, QuestionSet } from '../../src/contract/questions';
@@ -49,7 +49,7 @@ const ROOT = resolve(__dirname, '../..');
 const REAL_REPO = realpathSync(FAKE_REPO);
 const seeds = { readFile: repoReader(FAKE_REPO), repoRoot: REAL_REPO };
 
-function provider(mode: string, env: Record<string, string> = {}, extra: Partial<ProviderConfig> = {}): AgentProvider {
+function provider(mode: string, env: Record<string, string> = {}, extra: Partial<ClaudeProviderConfig> = {}): AgentProvider {
   return createProvider({ id: 'claude', claudePath: FAKE_CLAUDE, model: 'sonnet', maxBudgetUsd: 0.25, timeoutSeconds: 30, env: { FAKE_CLAUDE_MODE: mode, ...env }, ...extra });
 }
 

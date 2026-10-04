@@ -1,11 +1,14 @@
 // Pure pieces of the Claude provider: argv, schema conversion, prompt, error classification.
 
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import Ajv from 'ajv';
 import { DEFAULT_BUDGET_USD, DEFAULT_TIMEOUT_SECONDS, effectiveBudgetUsd, effectiveTimeoutSeconds, MAX_TIMEOUT_SECONDS } from '../../src/agent';
 import { AGENT_TASKS, ALLOWED_TOOLS, buildClaudeArgs, childEnv, classifyFailure, extractGraphJson, extractJson, progressFor, repoReader, taskMarker, type CliResult } from '../../src/agent/claudeCli';
-import { resolveCommand } from '../../src/agent/exec';
+import { absolutePathEnv, resolveCommand, runProcess } from '../../src/agent/exec';
 import { MAX_PROGRESS_CHARS, safeProgressText } from '../../src/agent/progress';
 import { buildPrompt, diffStats, MAX_DIFF_CHARS, SYSTEM_PROMPT } from '../../src/agent/prompt';
 import { ProviderError } from '../../src/agent/provider';
@@ -325,9 +328,35 @@ describe('resolveCommand', () => {
   const files = new Set(['C:\\Program Files\\Git\\cmd\\git.exe', 'C:\\Users\\me\\.local\\bin\\claude.exe', 'C:\\tools\\claude.cmd', 'C:\\repo\\git.exe', 'C:\\repo\\claude.exe']);
   const win = (path: string, extra: Partial<Parameters<typeof resolveCommand>[1]> = {}) => ({ platform: 'win32' as const, env: { Path: path, PATHEXT: '.COM;.EXE;.BAT;.CMD' }, isFile: (p: string) => files.has(p), ...extra });
 
-  it('is a no-op outside Windows and for paths', () => {
-    assert.equal(resolveCommand('git', { platform: 'linux', env: {} }), 'git');
+  it('leaves a command with a directory part alone', () => {
+    assert.equal(resolveCommand('/usr/local/bin/git', { platform: 'linux', env: {}, isFile: () => false }), '/usr/local/bin/git');
     assert.equal(resolveCommand('C:\\x\\claude.exe', win('')), 'C:\\x\\claude.exe');
+  });
+
+  it('on Linux and macOS, finds the command on absolute PATH entries and never in the cwd', () => {
+    const posixFiles = new Set(['/repo/codex', 'bin/codex', './codex', '/usr/local/bin/codex', '/usr/bin/git', '/bin/git']);
+    const posixLookup = (path: string | undefined) => ({ platform: 'linux' as const, env: path === undefined ? {} : { PATH: path }, isFile: (p: string) => posixFiles.has(p) });
+    // '' and '.' and 'bin' resolve against the cwd: the repo under review, where a PR can commit a "codex".
+    assert.equal(resolveCommand('codex', posixLookup(':.:bin:/usr/local/bin')), '/usr/local/bin/codex');
+    assert.equal(resolveCommand('codex', posixLookup('/usr/bin:')), undefined, 'only in the cwd: not found');
+    assert.equal(resolveCommand('git', posixLookup('/usr/bin:/bin')), '/usr/bin/git', 'the first match wins');
+    assert.equal(resolveCommand('git', posixLookup(undefined)), '/usr/bin/git', 'no PATH: execvp\'s default');
+    assert.equal(resolveCommand('', posixLookup('/usr/bin')), undefined);
+    assert.equal(resolveCommand('codex', { platform: 'darwin', env: { PATH: '::/usr/local/bin' }, isFile: (p) => posixFiles.has(p) }), '/usr/local/bin/codex');
+  });
+
+  it('on Linux, a file that is not executable is skipped, as execvp does', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'filos-resolve-'));
+    try {
+      mkdirSync(join(dir, 'a'));
+      mkdirSync(join(dir, 'b'));
+      writeFileSync(join(dir, 'a', 'tool'), 'not executable', { mode: 0o644 });
+      writeFileSync(join(dir, 'b', 'tool'), '#!/bin/sh\n', { mode: 0o755 });
+      mkdirSync(join(dir, 'c', 'tool'), { recursive: true }); // a folder named like it
+      assert.equal(resolveCommand('tool', { platform: 'linux', env: { PATH: `${join(dir, 'c')}:${join(dir, 'a')}:${join(dir, 'b')}` } }), join(dir, 'b', 'tool'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('on Windows, finds the .exe on absolute PATH entries and never in the cwd', () => {
@@ -341,5 +370,22 @@ describe('resolveCommand', () => {
   it('on Windows, reports a command that is only in the cwd as not found', () => {
     assert.equal(resolveCommand('git', win('.;;C:\\nothing')), undefined);
     assert.equal(resolveCommand('git', win('', { env: {} })), undefined);
+  });
+});
+
+describe('absolutePathEnv', () => {
+  it('drops empty and relative PATH entries (they resolve against the cwd: the repo), keeps the rest as is', () => {
+    const env = { PATH: '/usr/bin::.:bin:/opt/x/bin:', HOME: '/h' };
+    assert.deepEqual(absolutePathEnv(env, 'linux'), { PATH: '/usr/bin:/opt/x/bin', HOME: '/h' });
+    assert.equal(env.PATH, '/usr/bin::.:bin:/opt/x/bin:', 'input untouched');
+    const clean = { PATH: '/usr/bin:/bin' };
+    assert.equal(absolutePathEnv(clean, 'linux'), clean, 'nothing to drop: the same object');
+    assert.deepEqual(absolutePathEnv({ HOME: '/h' }, 'linux'), { HOME: '/h' });
+    assert.deepEqual(absolutePathEnv({ Path: 'C:\\Windows;;.;"C:\\Program Files\\Git\\cmd";repo' }, 'win32'), { Path: 'C:\\Windows;"C:\\Program Files\\Git\\cmd"' });
+  });
+
+  it('runProcess gives the child that PATH', async () => {
+    const r = await runProcess({ command: process.execPath, args: ['-e', 'process.stdout.write(process.env.PATH)'], cwd: tmpdir(), env: { PATH: `:.:${dirname(process.execPath)}:bin` }, collectStdout: true });
+    assert.equal(r.stdout, dirname(process.execPath));
   });
 });

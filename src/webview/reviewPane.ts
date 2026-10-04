@@ -10,7 +10,7 @@ import { h } from './dom';
 import { captureFocus, Drafts, restoreFocus } from './drafts';
 import type { Fog } from './fog';
 import type { Model } from './model';
-import { nodeLabel, paneButton, spinnerLine, type PaneContext, type PaneTab, type PaneUi } from './paneContext';
+import { agentName, nodeLabel, paneButton, spinnerLine, type PaneContext, type PaneTab, type PaneUi } from './paneContext';
 import { questionCard, questionsPanel } from './questions';
 
 export interface PaneHost {
@@ -269,7 +269,7 @@ export class ReviewPane {
         ),
       );
     } else if (!gate.questionId) {
-      out.push(spinnerLine('Claude Code is still writing the questions. The gate opens with the first one.'));
+      out.push(spinnerLine(`${agentName(ctx.review, true)} is still writing the questions. The gate opens with the first one.`));
     } else {
       const q = ctx.review.questions.find((x) => x.id === gate.questionId);
       if (q) out.push(h('div', { class: 'gate-step' }, h('p', { class: 'gate-ask', tabindex: -1, 'data-focus-key': 'gate:ask' }, 'Before you read the code:'), questionCard(q, ctx, { atGate: true })));
@@ -325,7 +325,7 @@ export class ReviewPane {
     if (next.comments.length > prev.comments.length) said.push(next.comments.length - prev.comments.length === 1 ? 'A comment was drafted.' : `${next.comments.length - prev.comments.length} comments were drafted.`);
     for (const c of next.comments) {
       const before = prev.comments.find((x) => x.id === c.id);
-      if (before?.threadPending && !c.threadPending) said.push('Claude Code replied in the discussion.');
+      if (before?.threadPending && !c.threadPending) said.push(`${agentName(next, true)} replied in the discussion.`);
     }
     const explored = next.territories.filter((t) => t.explored && !prev.territories.find((p) => p.nodeId === t.nodeId)?.explored);
     for (const t of explored) said.push(`Explored ${nodeLabel({ model: this.host.model()! }, t.nodeId)}.`);

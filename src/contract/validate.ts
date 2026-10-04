@@ -15,7 +15,8 @@ export interface ValidateOptions {
   /**
    * Repair line-number slips instead of rejecting: clamp ranges to the file, trim or drop
    * partially overlapping outline regions, drop ranges in missing files or outside the repo,
-   * flip reversed 'consumes' edges. Each repair becomes a warning. Structural problems (ids,
+   * flip reversed 'consumes' edges, cut display text (orientation, labels, gists, symbols) that
+   * is over its length limit at a word. Each repair becomes a warning. Structural problems (ids,
    * parents, unknown edge ends) are still errors, and so is a repair that leaves no code at all.
    * Use for agent output; hand-written fixtures stay strict.
    */
@@ -29,9 +30,49 @@ const schemaCheck = ajv.compile(schema);
 
 const PARENT_KINDS = new Set(['module', 'file', 'class']);
 
+type SchemaNode = { $ref?: string; maxLength?: number; properties?: Record<string, SchemaNode>; items?: SchemaNode; [keyword: string]: unknown };
+const GRAPH_SCHEMA = schema as unknown as SchemaNode & { definitions?: Record<string, SchemaNode> };
+const DEFINITIONS = GRAPH_SCHEMA.definitions ?? {};
+
+/**
+ * `value` with every string over its schema's maxLength cut at a word and ended with "…" (a copy
+ * where something changed; the rest is shared). For the graph only: all its limited strings are
+ * display text, never posted.
+ */
+function cutLongText(value: unknown, s: SchemaNode | undefined, at: string, warnings: string[]): unknown {
+  const node = s?.$ref?.startsWith('#/definitions/') ? DEFINITIONS[s.$ref.slice('#/definitions/'.length)] : s;
+  if (!node) return value;
+  if (typeof value === 'string') {
+    if (typeof node.maxLength !== 'number') return value;
+    const chars = [...value];
+    if (chars.length <= node.maxLength) return value;
+    warnings.push(`repaired: cut ${at || '(root)'} to ${node.maxLength} characters (it had ${chars.length})`);
+    return cutAtWord(chars, node.maxLength);
+  }
+  if (Array.isArray(value)) {
+    const out = value.map((v, i) => cutLongText(v, node.items, `${at}/${i}`, warnings));
+    return out.some((v, i) => v !== value[i]) ? out : value;
+  }
+  if (value && typeof value === 'object' && node.properties) {
+    const entries = Object.entries(value as Record<string, unknown>);
+    const out = entries.map(([k, v]) => [k, cutLongText(v, node.properties?.[k], `${at}/${k}`, warnings)] as const);
+    return out.some(([, v], i) => v !== entries[i][1]) ? Object.fromEntries(out) : value;
+  }
+  return value;
+}
+
+/** At most `max` code points, ending in "…", cut at a space when one is near the end. */
+function cutAtWord(chars: string[], max: number): string {
+  const head = chars.slice(0, Math.max(0, max - 1)).join('');
+  const space = head.search(/\s\S*$/);
+  return `${(space >= head.length * 0.7 ? head.slice(0, space) : head).trimEnd()}…`;
+}
+
 /** Returns a copy of the graph with canonical paths (never the input itself), or the errors. */
 export function validateGraph(input: unknown, opts: ValidateOptions = {}): ValidationResult {
   const warnings: string[] = [];
+  // Every length-limited string in the graph is display text, so a long one is cut, not fatal.
+  if (opts.repair) input = cutLongText(input, GRAPH_SCHEMA, '', warnings);
   if (!schemaCheck(input)) {
     const errors = (schemaCheck.errors ?? []).map((e) => `${e.instancePath || '(root)'} ${e.message ?? 'is invalid'}${e.params && 'allowedValues' in e.params ? `: ${(e.params as { allowedValues: unknown[] }).allowedValues.join(', ')}` : ''}`);
     return { ok: false, errors, warnings };

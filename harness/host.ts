@@ -6,7 +6,9 @@
 // The review side runs the REAL ReviewModel (src/review/model.ts) over the sample graph and
 // fixtures/sample-questions.json, with an in-memory confidence store. Agent effects (grading,
 // thread replies, drafting) and posting are simulated with short delays and canned replies, so
-// every flow can be clicked through. Nothing leaves the page: no agent, no GitHub.
+// every flow can be clicked through. Nothing leaves the page: no agent, no GitHub. The agent CLI
+// (Claude Code or Codex) is a harness switch; the header's "Agent" button and the error view's
+// "Choose agent…" flip it, standing in for the host's quick pick.
 
 import type { ReviewGraph } from '../src/contract/graph';
 import type { QuestionSet } from '../src/contract/questions';
@@ -34,9 +36,18 @@ const KEYS = {
   options: 'filos-harness-options',
 };
 
+/** The agent CLIs the real host can run (filos.provider), with what the harness pretends they are. */
+const AGENT_CLIS = {
+  claude: { name: 'Claude Code', model: 'claude-sonnet-5', login: 'claude auth login' },
+  codex: { name: 'Codex', model: 'gpt-5-codex', login: 'codex login' },
+} as const;
+type AgentCli = keyof typeof AGENT_CLIS;
+
 interface Options {
   mode: Mode;
   agent: boolean;
+  /** Which agent CLI the (simulated) host runs: the review's wording names it. */
+  agentCli: AgentCli;
   /** Simulated agent calls fail (expired login): grading falls back to self-checks. */
   agentFails: boolean;
   target: 'none' | 'github';
@@ -45,7 +56,7 @@ interface Options {
   postFails: boolean;
 }
 
-const DEFAULTS: Options = { mode: 'fast', agent: false, agentFails: false, target: 'none', questions: 'ready', postFails: false };
+const DEFAULTS: Options = { mode: 'fast', agent: false, agentCli: 'claude', agentFails: false, target: 'none', questions: 'ready', postFails: false };
 
 const SAMPLE_TARGET: PostTarget = { kind: 'none', reason: 'This is the bundled sample: there is no pull request to post to. Export the review as Markdown instead.' };
 const GITHUB_TARGET: Extract<PostTarget, { kind: 'github' }> = { kind: 'github', repo: 'acme/ledger', number: 42, url: 'https://github.com/acme/ledger/pull/42' };
@@ -92,6 +103,9 @@ function write(key: string, v: unknown): void {
 
 const log: Window['__hostLog'] = (window.__hostLog = []);
 let options: Options = { ...DEFAULTS, ...(read<Partial<Options>>(KEYS.options) ?? {}) };
+if (!(options.agentCli in AGENT_CLIS)) options.agentCli = 'claude';
+/** The display name of the agent CLI the harness pretends to run. */
+const agentName = () => AGENT_CLIS[options.agentCli].name;
 let hostView = read<{ expanded: string[]; visited: string[]; selected?: string }>(KEYS.view) ?? { expanded: [], visited: [] };
 let graph: ReviewGraph | undefined;
 let questionSet: QuestionSet | undefined;
@@ -159,7 +173,7 @@ function questionsStatus(): QuestionsStatus {
     case 'loading':
       return { state: 'loading' };
     case 'error':
-      return { state: 'error', message: 'Claude Code could not write questions for this PR (simulated).' };
+      return { state: 'error', message: `${agentName()} could not write questions for this PR (simulated).` };
     case 'none':
       return { state: 'none', message: 'No questions for this review (simulated).' };
     default:
@@ -183,6 +197,7 @@ function buildModel(g: ReviewGraph): ReviewModel {
       },
     },
     agentAvailable: options.agent,
+    agentName: agentName(),
     post: options.target === 'github' ? GITHUB_TARGET : SAMPLE_TARGET,
     now: () => new Date().toISOString(),
   });
@@ -209,7 +224,7 @@ async function sendLoad(opts: { agent?: boolean; warnings?: boolean; pr?: boolea
     const g = structuredClone(await fixtures());
     source = opts.agent || opts.pr ? 'agent' : 'fixture';
     prLoaded = !!opts.pr;
-    if (source === 'agent') g.generatedBy = { provider: 'claude', model: 'claude-sonnet-5', at: new Date().toISOString() };
+    if (source === 'agent') g.generatedBy = { provider: options.agentCli, model: AGENT_CLIS[options.agentCli].model, at: new Date().toISOString() };
     if (opts.pr) {
       g.pr = { ...g.pr, url: GITHUB_TARGET.url };
       becomePullRequest();
@@ -234,10 +249,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function simulateRun(): Promise<void> {
   const seq = ++runSeq;
-  send({ type: 'loading', message: 'Reading the PR…', detail: 'claude · feature/bankers-rounding → main' });
+  send({ type: 'loading', message: `Checking that ${agentName()} is ready…`, detail: 'Comparing feature/bankers-rounding with main' });
   await sleep(700);
   if (seq !== runSeq) return;
-  send({ type: 'loading', message: 'Reading money/round.ts', detail: 'claude · feature/bankers-rounding → main' });
+  send({ type: 'loading', message: 'Reading money/round.ts', detail: 'Comparing feature/bankers-rounding with main' });
   await sleep(700);
   if (seq !== runSeq) return;
   await sendLoad({ agent: true });
@@ -247,17 +262,17 @@ async function simulateRun(): Promise<void> {
 
 const PR_LABEL = `${GITHUB_TARGET.repo}#${GITHUB_TARGET.number}`;
 const PR_MESSAGE = `Reviewing ${PR_LABEL}…`;
-const PR_DETAIL = 'claude · feature/bankers-rounding → main';
+const PR_DETAIL = `${PR_LABEL} · feature/bankers-rounding → main`;
 
-/** Each frame: [index of the active step, its live detail, the details of the steps already done]. */
-const PR_STEP_LABELS = ['Fetch the pull request', 'Prepare the code', 'Comprehension pass (claude)', 'Write questions (claude)'];
+/** The real host's steps, named after the agent CLI that runs them. */
+const prStepLabels = () => ['Find the pull request', 'Get the code', `${agentName()} reads the change`, `${agentName()} writes questions`];
 const PR_DONE_DETAIL = [`#${GITHUB_TARGET.number} · 14 files · +440 −176`, 'feature/bankers-rounding at 3f2a91c', 'Graph: 14 nodes, 17 edges', '9 questions'];
 const PR_FRAMES: [number, string][] = [
   [0, `gh pr view ${GITHUB_TARGET.url}`],
   [0, 'Reading the diff…'],
   [1, 'Fetching feature/bankers-rounding…'],
   [1, 'Checking out 3f2a91c in a temporary worktree'],
-  [2, 'Starting claude (sonnet)…'],
+  [2, 'Starting the agent…'],
   [2, 'Reading src/money/round.ts'],
   [2, 'Searching for roundToCents'],
   [2, 'Reading src/invoice/totals.ts'],
@@ -267,7 +282,7 @@ const PR_FRAMES: [number, string][] = [
 ];
 
 function prSteps(active: number, detail: string, failed = false): LoadingStep[] {
-  return PR_STEP_LABELS.map((label, i): LoadingStep => {
+  return prStepLabels().map((label, i): LoadingStep => {
     if (i < active) return { label, state: 'done', detail: PR_DONE_DETAIL[i] };
     if (i === active) return { label, state: failed ? 'failed' : 'active', detail };
     return { label, state: 'pending' };
@@ -280,12 +295,13 @@ async function simulatePrRun(failAt?: number): Promise<void> {
   for (let f = 0; f < PR_FRAMES.length; f++) {
     const [active, detail] = PR_FRAMES[f];
     if (f === failAt) {
+      const cli = AGENT_CLIS[options.agentCli];
       send({
         type: 'error',
-        message: 'Your claude session has expired.',
-        detail: 'claude exited with code 1:\nInvalid API key · Please run /login\n\nRun "claude auth login" in a terminal, then try again.',
+        message: `Your ${cli.name} session has expired.`,
+        detail: `Sign in again by running \`${cli.login}\` in a terminal (Filos can open one for you), then retry. Filos never sees your credentials.\n\n(simulated)`,
         actions: ['login', 'retry', 'useFixture'],
-        steps: prSteps(active, 'claude: login expired (simulated)', true),
+        steps: prSteps(active, 'login expired (simulated)', true),
       });
       return;
     }
@@ -293,7 +309,7 @@ async function simulatePrRun(failAt?: number): Promise<void> {
     await sleep(active === 2 ? 900 : 650);
     if (seq !== runSeq) return;
   }
-  send({ type: 'loading', message: PR_MESSAGE, detail: PR_DETAIL, steps: prSteps(PR_STEP_LABELS.length, '') });
+  send({ type: 'loading', message: PR_MESSAGE, detail: PR_DETAIL, steps: prSteps(prStepLabels().length, '') });
   await sleep(400);
   if (seq !== runSeq) return;
   await sendLoad({ pr: true });
@@ -379,22 +395,22 @@ function runEffect(effect: ReviewEffect): void {
       return;
     case 'evaluate':
       setTimeout(() => {
-        if (options.agentFails) m.failEvaluation(effect.questionId, 'Your Claude Code login has expired (simulated).');
-        else m.applyEvaluation(effect.questionId, cannedEvaluation(effect.questionId, effect.attempt, effect.text));
+        if (options.agentFails) m.failEvaluation(effect.questionId, `Your ${agentName()} login has expired (simulated).`);
+        else m.applyEvaluation(effect.questionId, cannedEvaluation(effect.questionId, effect.attempt, effect.text), agentName());
         sendReview();
       }, 900);
       return;
     case 'thread':
       setTimeout(() => {
-        if (options.agentFails) m.failThread(effect.commentId, 'Claude Code could not reply: your login has expired (simulated). Log in again and resend.');
-        else m.applyThreadReply(effect.commentId, cannedThreadReply(effect.commentId));
+        if (options.agentFails) m.failThread(effect.commentId, `I couldn't reply: your ${agentName()} login has expired (simulated). Log in again, then send your message again.`, agentName());
+        else m.applyThreadReply(effect.commentId, cannedThreadReply(effect.commentId), agentName());
         sendReview();
       }, 1100);
       return;
     case 'draft':
       setTimeout(() => {
-        if (options.agentFails) m.failDrafting('Claude Code could not draft comments (simulated).');
-        else m.applyAgentDrafts(DRAFTS);
+        if (options.agentFails) m.failDrafting(`${agentName()} could not draft comments (simulated).`);
+        else m.applyAgentDrafts(DRAFTS, agentName());
         sendReview();
       }, 1300);
       return;
@@ -473,6 +489,11 @@ function onWebviewMessage(msg: WebviewToHost): void {
       write(KEYS.view, hostView);
       break;
     case 'action':
+      // The real host shows a quick pick of Claude Code and Codex; the harness flips between them.
+      if (msg.action === 'chooseAgent') {
+        switchAgentCli();
+        break;
+      }
       runSeq++;
       if (msg.action === 'useFixture') void sendLoad();
       else rerun(); // login, retry, rerun: the real host re-runs the agent
@@ -528,12 +549,23 @@ function setWidth(px: string): void {
   for (const b of document.querySelectorAll<HTMLElement>('[data-width]')) b.setAttribute('aria-pressed', String(b.dataset.width === (px || '')));
 }
 
+/** What choosing the other agent CLI does in the real host: later agent steps (and the wording) use it. */
+function switchAgentCli(): void {
+  options.agentCli = options.agentCli === 'claude' ? 'codex' : 'claude';
+  saveOptions();
+  record('host (simulated)', { chooseAgent: `filos.provider = ${options.agentCli} (${agentName()})` });
+  model?.setAgentName(agentName());
+  sendReview();
+}
+
 function renderOptionState(): void {
   const pressed = (sel: string, on: boolean) => document.querySelector(sel)?.setAttribute('aria-pressed', String(on));
   const mode = model?.mode ?? options.mode;
   pressed('#h-mode-fast', mode === 'fast');
   pressed('#h-mode-didactic', mode === 'didactic');
   pressed('#h-agent', options.agent);
+  const cli = document.getElementById('h-agent-cli');
+  if (cli) cli.textContent = `CLI: ${agentName()}`;
   pressed('#h-agent-fails', options.agentFails);
   pressed('#h-target', options.target === 'github');
   pressed('#h-post-fails', options.postFails);
@@ -586,7 +618,7 @@ function wire(): void {
     lastRun = 'pr';
     void simulatePrRun(6);
   });
-  manual('h-loading', () => send({ type: 'loading', message: 'Asking claude to read the PR…', detail: 'Reading money/round.ts' }));
+  manual('h-loading', () => send({ type: 'loading', message: `Asking ${agentName()} to read the PR…`, detail: 'Reading money/round.ts' }));
   manual('h-error', () =>
     send({
       type: 'error',
@@ -595,7 +627,18 @@ function wire(): void {
       actions: ['retry', 'useFixture', 'login'],
     }),
   );
-  manual('h-error-auth', () => send({ type: 'error', message: 'Your claude session has expired.', detail: 'Run "claude auth login" in a terminal, then try again.', actions: ['login', 'useFixture'] }));
+  manual('h-error-auth', () => {
+    const cli = AGENT_CLIS[options.agentCli];
+    send({ type: 'error', message: `Your ${cli.name} session has expired.`, detail: `Run "${cli.login}" in a terminal, then try again.`, actions: ['login', 'retry', 'useFixture'] });
+  });
+  manual('h-error-missing', () =>
+    send({
+      type: 'error',
+      message: `Filos can't find the ${agentName()} CLI.`,
+      detail: `Filos runs the ${agentName()} CLI so the review uses your existing login. Install it, or set the setting "filos.${options.agentCli}.path" to the full path of the executable (it is "${options.agentCli}" now).`,
+      actions: ['retry', 'chooseAgent', 'useFixture'],
+    }),
+  );
   on('h-select', () => send({ type: 'select', id: (document.getElementById('h-select-id') as HTMLSelectElement).value }));
   on('h-log-clear', () => {
     log.length = 0;
@@ -625,6 +668,7 @@ function wire(): void {
     model?.setAgentAvailable(options.agent);
     sendReview();
   });
+  on('h-agent-cli', switchAgentCli);
   on('h-agent-fails', () => {
     options.agentFails = !options.agentFails;
     saveOptions();

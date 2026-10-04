@@ -22,6 +22,7 @@ import type { DraftComment, PostTarget, ReviewSnapshot } from '../review/types';
 import { globalConfidenceStore } from './confidenceStore';
 import { confirmationText, detectPullRequest, GhError, planPost, postReview, postTargetOf, samePullRequest, type PullRequest, type PullRequestLookup, type ReviewPayload } from './github';
 import type { ReviewSession } from './session';
+import { usageNote } from './usage';
 
 export const MODE_STATE_KEY = 'filos.mode';
 export const SAMPLE_POST_REASON = "The sample isn't a GitHub pull request. Use Export to copy the review as Markdown.";
@@ -39,6 +40,11 @@ export interface ReviewHost {
   send(review: ReviewSnapshot): void;
   /** A provider with the user's settings. Throws when the settings are invalid. */
   provider(): { provider: AgentProvider; config: ProviderConfig };
+  /**
+   * Display name of the agent CLI the settings choose now (filos.provider), for the webview's
+   * wording. Never throws. Without it the webview says "the agent".
+   */
+  agentName?(): string;
   /** Opens the provider's own login in a terminal. */
   openLogin(): void;
   /** The gh executable (user-only setting). Throws when the setting is invalid. */
@@ -58,7 +64,8 @@ export interface PostRecord {
   error?: string;
 }
 
-type TaskOutcome<T> = { ok: true; value: T } | { ok: false; kind: ProviderErrorKind; message: string };
+/** agentName: the agent CLI that ran the task (the setting may change while it runs), when one was set up. */
+type TaskOutcome<T> = { ok: true; value: T; agentName: string } | { ok: false; kind: ProviderErrorKind; message: string; agentName?: string };
 
 export class ReviewState implements vscode.Disposable {
   readonly model: ReviewModel;
@@ -92,6 +99,7 @@ export class ReviewState implements vscode.Disposable {
       persisted: session.loadReview(),
       confidence: globalConfidenceStore(host.globalState, session.repoKey, (e) => host.log.warn(`saving confidence failed: ${String(e)}`)),
       agentAvailable: source === 'agent',
+      agentName: host.agentName?.(),
       post: this.initialPostTarget(),
       headOid: session.headOid,
       now: () => new Date().toISOString(),
@@ -122,6 +130,12 @@ export class ReviewState implements vscode.Disposable {
     if (action.type === 'setMode') void this.host.globalState.update(MODE_STATE_KEY, this.model.mode);
     this.changed();
     await this.track(this.run(effect));
+  }
+
+  /** The agent settings changed (another CLI chosen): later agent steps use it, and the webview says so. */
+  agentChanged(): void {
+    this.model.setAgentName(this.host.agentName?.());
+    this.changed();
   }
 
   /** May code open for this node? False while it is in didactic fog. Selecting closes the gate. */
@@ -252,17 +266,16 @@ export class ReviewState implements vscode.Disposable {
     const started = Date.now();
     try {
       const res = await run(provider, this.abort.signal);
-      const cost = res.costUsd !== undefined ? `, $${res.costUsd.toFixed(3)}` : '';
-      this.host.log.info(`agent ${what}: done in ${Math.round((res.durationMs ?? Date.now() - started) / 100) / 10} s${cost}`);
+      this.host.log.info(`agent ${what}: done in ${Math.round((res.durationMs ?? Date.now() - started) / 100) / 10} s${usageNote(res)}`);
       for (const w of res.warnings) this.host.log.warn(`agent ${what}: ${w}`);
-      return { ok: true, value: res.value };
+      return { ok: true, value: res.value, agentName: provider.displayName };
     } catch (e) {
       const kind: ProviderErrorKind = e instanceof ProviderError ? e.kind : 'failed';
       this.host.log.error(`agent ${what} (${kind}): ${errorText(e)}${e instanceof ProviderError && e.detail ? `\n${e.detail}` : ''}`);
-      if (!this.alive) return { ok: false, kind: 'cancelled', message: `${capital(what)} was cancelled.` };
+      if (!this.alive) return { ok: false, kind: 'cancelled', message: `${capital(what)} was cancelled.`, agentName: provider.displayName };
       const message = taskFailure(kind, what, provider.displayName, config, e);
       if (kind === 'authExpired') this.offerLogin(message);
-      return { ok: false, kind, message };
+      return { ok: false, kind, message, agentName: provider.displayName };
     }
   }
 
@@ -326,7 +339,7 @@ export class ReviewState implements vscode.Disposable {
     const r = await this.agentTask('grading your answer', (p, signal) =>
       evaluateAnswer(p, { repoRoot: this.session.target.repoRoot, question: q, nodeSummary: nodeSummary(node), codeExcerpt: this.excerptFor(node), answer: text, attempt, signal }),
     );
-    if (r.ok) this.model.applyEvaluation(questionId, r.value);
+    if (r.ok) this.model.applyEvaluation(questionId, r.value, r.agentName);
     else if (r.kind === 'cancelled' || !this.alive) {
       // Closed or re-run while grading: the answer goes back to unanswered, to be graded another
       // time. A self-check here would show the reference before the reviewer was graded.
@@ -359,8 +372,9 @@ export class ReviewState implements vscode.Disposable {
         signal,
       }),
     );
-    if (r.ok) this.model.applyThreadReply(commentId, r.value);
-    else this.model.failThread(commentId, threadFailure(r.kind));
+    // Named after the CLI that ran it, not the one chosen now: the reviewer may have switched meanwhile.
+    if (r.ok) this.model.applyThreadReply(commentId, r.value, r.agentName);
+    else this.model.failThread(commentId, threadFailure(r.kind, r.agentName), r.agentName);
     this.changed();
   }
 
@@ -381,8 +395,8 @@ export class ReviewState implements vscode.Disposable {
       draftComments(p, { repoRoot: this.session.target.repoRoot, graph: this.model.graph, answered, notes, existing, signal }),
     );
     if (r.ok) {
-      this.model.applyAgentDrafts(r.value.comments);
-      if (!r.value.comments.length && this.alive) void vscode.window.showInformationMessage('Filos: the agent found nothing new to comment on.');
+      this.model.applyAgentDrafts(r.value.comments, r.agentName);
+      if (!r.value.comments.length && this.alive) void vscode.window.showInformationMessage(`Filos: ${r.agentName} found nothing new to comment on.`);
     } else {
       this.model.failDrafting(r.message);
       this.warn(r);
@@ -583,7 +597,8 @@ function taskFailure(kind: ProviderErrorKind, what: string, name: string, cfg: P
     case 'timeout':
       return `${name} didn't finish ${what} within ${cfg.timeoutSeconds} seconds.`;
     case 'budget':
-      return `${name} reached the spending cap ($${cfg.maxBudgetUsd}) while ${what}.`;
+      // Only Claude Code has a dollar cap; anything else that reports a budget hit a usage limit.
+      return cfg.id === 'claude' ? `${name} reached the spending cap ($${cfg.maxBudgetUsd}) while ${what}.` : `${name} reached a usage limit while ${what}.`;
     case 'contract':
       return `${name}'s answer while ${what} didn't match what Filos expects. The Filos log has the details.`;
     case 'cancelled':
@@ -594,14 +609,14 @@ function taskFailure(kind: ProviderErrorKind, what: string, name: string, cfg: P
 }
 
 /** The agent's turn in a thread when it couldn't reply: plain text, by kind only (never raw error text). */
-function threadFailure(kind: ProviderErrorKind): string {
+function threadFailure(kind: ProviderErrorKind, name: string | undefined): string {
   switch (kind) {
     case 'authExpired':
-      return "I couldn't reply: the agent's login has expired. Log in again, then send your message again.";
+      return `I couldn't reply: ${name ? `your ${name} login` : "the agent's login"} has expired. Log in again, then send your message again.`;
     case 'timeout':
       return "I couldn't reply in time. Send your message again to retry.";
     case 'budget':
-      return "I couldn't reply: the spending cap was reached.";
+      return "I couldn't reply: the spending cap (or the agent's usage limit) was reached.";
     case 'cancelled':
       return 'The reply was cancelled.';
     default:

@@ -20,6 +20,11 @@ export interface Attempt {
   reply: string;
   /** Who produced the verdict. */
   by: 'choice' | 'agent' | 'self';
+  /**
+   * by 'agent': the agent CLI that graded it ("Claude Code", "Codex"), as named then. The webview
+   * shows this, not the CLI chosen now; absent (older reviews): "the agent".
+   */
+  agentName?: string;
 }
 
 export interface AnswerState {
@@ -51,11 +56,14 @@ export interface ThreadMessage {
   text: string;
   /** Agent messages may propose a rewritten comment the reviewer can adopt. */
   proposal?: string;
+  /** role 'agent': the agent CLI that wrote it, as named then; absent (older reviews): "the agent". */
+  agentName?: string;
 }
 
 export type CommentStatus = 'draft' | 'accepted' | 'rejected';
 
-export type CommentOrigin = { kind: 'question'; questionId: string; choiceId?: string } | { kind: 'agent' } | { kind: 'note' };
+/** An agent draft names the agent CLI that wrote it, as named then; absent (older reviews): "the agent". */
+export type CommentOrigin = { kind: 'question'; questionId: string; choiceId?: string } | { kind: 'agent'; agentName?: string } | { kind: 'note' };
 
 export interface DraftComment {
   id: string;
@@ -129,6 +137,11 @@ export interface ReviewSnapshot {
   questionsStatus: { state: 'ready' | 'loading' | 'error' | 'none'; message?: string };
   /** Whether open answers are graded and threads answered by the agent (else self-checks). */
   agentAvailable: boolean;
+  /**
+   * Display name of the agent CLI the review's agent steps go to now (filos.provider), e.g.
+   * "Claude Code" or "Codex", for the webview's wording. Absent: the webview says "the agent".
+   */
+  agentName?: string;
   /** Agent is drafting comments from the answers. */
   draftingPending?: boolean;
   post: PostState;

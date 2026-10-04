@@ -155,7 +155,7 @@ export function parseWebviewMessage(raw: unknown): WebviewToHost | undefined {
       return s && strs(s.expanded) && strs(s.visited) && (s.selected === undefined || typeof s.selected === 'string') ? (m as unknown as WebviewToHost) : undefined;
     }
     case 'action':
-      return ['login', 'retry', 'useFixture', 'rerun'].includes(m.action as string) ? (m as unknown as WebviewToHost) : undefined;
+      return ['login', 'retry', 'useFixture', 'chooseAgent', 'rerun'].includes(m.action as string) ? (m as unknown as WebviewToHost) : undefined;
     case 'rendered':
       return strs(m.visibleNodes) && strs(m.expanded) ? (m as unknown as WebviewToHost) : undefined;
     default:

@@ -31,7 +31,8 @@ export type HostToWebview =
   /** Full questionnaire/comments/didactic state; sent after 'load' and after every change. */
   | { type: 'review'; review: ReviewSnapshot };
 
-export type ErrorAction = 'login' | 'retry' | 'useFixture';
+/** chooseAgent: "Filos: Choose Agent CLI…" (Claude Code or Codex), from the error view or the header. */
+export type ErrorAction = 'login' | 'retry' | 'useFixture' | 'chooseAgent';
 
 export type WebviewToHost =
   | { type: 'ready' }

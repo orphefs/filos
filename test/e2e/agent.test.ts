@@ -16,14 +16,14 @@ function setMode(mode: Mode): void {
   process.env.FAKE_CLAUDE_MODE = mode;
 }
 
-interface ErrorShown {
+export interface ErrorShown {
   message: string;
   actions: [string, string][];
   detail: string;
 }
 
 /** The error view as the webview draws it, once it is up. */
-function errorShown(wb: Workbench): Promise<ErrorShown> {
+export function errorShown(wb: Workbench): Promise<ErrorShown> {
   return wb.waitForWebview<ErrorShown>(
     `(d) => {
       const e = d.querySelector('.status-host:not([hidden]) .status--error');
@@ -90,7 +90,7 @@ export function registerAgentTests(): void {
 
       if (!wb) {
         await api.simulateAction('login');
-        assert.ok(vscode.window.terminals.some((t) => t.name === 'Filos login'));
+        assert.ok(vscode.window.terminals.some((t) => t.name === 'Filos: Claude Code login'));
         return;
       }
       const shown = await errorShown(wb);
@@ -103,7 +103,7 @@ export function registerAgentTests(): void {
       await shot('agent-auth-error');
 
       await wb.clickWebview('button[data-action="login"]');
-      const terminal = await waitFor(() => vscode.window.terminals.find((t) => t.name === 'Filos login'), 'the "Filos login" terminal');
+      const terminal = await waitFor(() => vscode.window.terminals.find((t) => t.name === 'Filos: Claude Code login'), 'the "Filos: Claude Code login" terminal');
       await sleep(500);
       await shot('agent-login-terminal');
       terminal.dispose();

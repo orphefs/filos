@@ -1312,4 +1312,60 @@ describe('ReviewModel', () => {
       assert.ok(s.territories.every((t) => t.familiarity === undefined));
     });
   });
+
+  describe('which agent CLI wrote what', () => {
+    it('grading, thread replies, thread failures and drafts keep the name of the CLI that ran them, through a switch and a reload', () => {
+      const { model } = make({ agentAvailable: true, agentName: 'Claude Code' });
+      model.answer('o-total', undefined, 'Per line.');
+      model.applyEvaluation('o-total', { verdict: 'incorrect', reply: 'What happens to rates that share a line?' }, 'Claude Code');
+      model.answer('j-round', 'block');
+      model.thread('c1', 'Kinder?');
+      model.applyThreadReply('c1', { reply: 'Sure.', proposal: 'Please keep half-up, if you can.' }, 'Claude Code');
+      model.draftWithAgent();
+      model.applyAgentDrafts([{ severity: 'nit', body: 'Typo in the docstring.' }], 'Claude Code');
+      // The reviewer switches to Codex: what Claude Code wrote stays Claude Code's.
+      model.setAgentName('Codex');
+      model.thread('c1', 'Shorter?');
+      model.failThread('c1', "I couldn't reply: your Codex login has expired.", 'Codex');
+      const check = (m: ReviewModel) => {
+        const s = m.snapshot();
+        assert.equal(s.agentName, 'Codex');
+        assert.equal(s.answers['o-total'].attempts[0].agentName, 'Claude Code');
+        const c1 = s.comments.find((c) => c.id === 'c1')!;
+        assert.deepEqual(c1.thread.map((t) => [t.role, t.agentName]), [['user', undefined], ['agent', 'Claude Code'], ['user', undefined], ['agent', 'Codex']]);
+        const drafted = s.comments.find((c) => c.origin.kind === 'agent')!;
+        assert.deepEqual(drafted.origin, { kind: 'agent', agentName: 'Claude Code' });
+      };
+      check(model);
+      check(make({ agentAvailable: true, agentName: 'Codex', persisted: JSON.parse(JSON.stringify(model.persisted())) }).model);
+    });
+
+    it('older saved reviews have no names (the webview says "the agent"); stored names are cleaned', () => {
+      const { model } = make({ agentAvailable: true, agentName: 'Codex' });
+      model.answer('o-total', undefined, 'Per line.');
+      model.applyEvaluation('o-total', { verdict: 'incorrect', reply: 'Hint.' }, 'Codex');
+      model.answer('j-round', 'block');
+      model.thread('c1', 'Kinder?');
+      model.applyThreadReply('c1', { reply: 'Sure.' }, 'Codex');
+      model.draftWithAgent();
+      model.applyAgentDrafts([{ severity: 'nit', body: 'Typo.' }], 'Codex');
+      const saved = JSON.parse(JSON.stringify(model.persisted()));
+      // As saved before names were stored.
+      const old = JSON.parse(JSON.stringify(saved, (k, v) => (k === 'agentName' ? undefined : v)));
+      const before = make({ agentAvailable: true, agentName: 'Codex', persisted: old }).model.snapshot();
+      assert.equal(before.answers['o-total'].attempts[0].agentName, undefined);
+      assert.deepEqual(before.comments.find((c) => c.id === 'c1')!.thread.map((t) => t.agentName), [undefined, undefined]);
+      assert.deepEqual(before.comments.find((c) => c.origin.kind === 'agent')!.origin, { kind: 'agent' });
+      // Tampered names: cleaned to one line without direction overrides, or dropped; never on a user message.
+      saved.answers['o-total'].attempts[0].agentName = 42;
+      const c1 = saved.comments.find((c: { id: string }) => c.id === 'c1');
+      c1.thread[0].agentName = 'Codex';
+      c1.thread[1].agentName = 'Co‮dex\n\tCLI';
+      saved.comments.find((c: { origin: { kind: string } }) => c.origin.kind === 'agent').origin.agentName = '   ';
+      const after = make({ agentAvailable: true, agentName: 'Codex', persisted: saved }).model.snapshot();
+      assert.equal(after.answers['o-total'].attempts[0].agentName, undefined);
+      assert.deepEqual(after.comments.find((c) => c.id === 'c1')!.thread.map((t) => [t.role, t.agentName]), [['user', undefined], ['agent', 'Codex CLI']]);
+      assert.deepEqual(after.comments.find((c) => c.origin.kind === 'agent')!.origin, { kind: 'agent' });
+    });
+  });
 });

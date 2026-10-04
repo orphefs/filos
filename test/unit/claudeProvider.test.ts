@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from '
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { createProvider, ProviderError, type ProviderConfig } from '../../src/agent';
+import { createProvider, ProviderError, type ClaudeProviderConfig } from '../../src/agent';
 import { runProcess } from '../../src/agent/exec';
 import type { ComprehensionRequest } from '../../src/agent/provider';
 import { FAKE_CLAUDE, FAKE_DIFF, FAKE_INDEX, FAKE_REPO, fixtureGraph } from './helpers';
@@ -13,7 +13,7 @@ import { FAKE_CLAUDE, FAKE_DIFF, FAKE_INDEX, FAKE_REPO, fixtureGraph } from './h
 const scratch = mkdtempSync(join(tmpdir(), 'filos-provider-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
-function provider(mode: string, extra: Partial<ProviderConfig> = {}, env: Record<string, string> = {}) {
+function provider(mode: string, extra: Partial<ClaudeProviderConfig> = {}, env: Record<string, string> = {}) {
   return createProvider({ id: 'claude', claudePath: FAKE_CLAUDE, model: 'sonnet', maxBudgetUsd: 0.5, timeoutSeconds: 30, env: { FAKE_CLAUDE_MODE: mode, ...env }, ...extra });
 }
 

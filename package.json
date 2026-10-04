@@ -51,6 +51,11 @@
         "command": "filos.cleanPullRequestCheckouts",
         "title": "Delete Pull Request Checkouts",
         "category": "Filos"
+      },
+      {
+        "command": "filos.chooseAgent",
+        "title": "Choose Agent CLI\u2026",
+        "category": "Filos"
       }
     ],
     "configuration": {
@@ -59,30 +64,53 @@
         "filos.provider": {
           "type": "string",
           "enum": [
-            "claude"
+            "claude",
+            "codex"
+          ],
+          "enumDescriptions": [
+            "Claude Code: the claude CLI, with its own login (subscription, API key, Bedrock or Vertex).",
+            "Codex: the OpenAI codex CLI, with its own login (ChatGPT account or API key)."
           ],
           "default": "claude",
-          "description": "Agent CLI used for the comprehension pass.",
-          "scope": "machine"
+          "scope": "machine",
+          "markdownDescription": "Agent CLI that runs every agent step: the comprehension graph, questions, grading, drafting and threads. Use **Filos: Choose Agent CLI\u2026** to see which CLIs are installed and logged in. Read from user settings only, so a repository can't choose which program Filos runs."
         },
         "filos.claude.path": {
           "type": "string",
           "default": "claude",
           "scope": "machine",
-          "description": "Path to the claude CLI: a name on PATH, an absolute path, or ~/\u2026. Read from user settings only, so a repository can't choose which program Filos runs."
+          "description": "Path to the claude CLI (Claude Code): a name on PATH, an absolute path, or ~/\u2026. Read from user settings only, so a repository can't choose which program Filos runs."
         },
         "filos.claude.model": {
           "type": "string",
           "default": "sonnet",
           "scope": "machine",
-          "description": "Model alias passed to --model. Empty uses the CLI's default model, which may be slower and more expensive. Read from user settings only."
+          "description": "Claude Code model alias passed to --model. Empty uses the CLI's default model, which may be slower and more expensive. Read from user settings only."
         },
         "filos.claude.maxBudgetUsd": {
           "type": "number",
           "default": 1,
           "minimum": 0.01,
           "scope": "machine",
-          "description": "Spending cap in US dollars per comprehension pass. Read from user settings only, so a repository can't raise it."
+          "description": "Spending cap in US dollars per Claude Code call (the comprehension pass, and each question, grading, drafting or thread step). Claude Code only: Codex reports no dollar cost, so filos.agentTimeoutSeconds is what bounds it. Read from user settings only, so a repository can't raise it."
+        },
+        "filos.codex.path": {
+          "type": "string",
+          "default": "codex",
+          "scope": "machine",
+          "description": "Path to the codex CLI (Codex): a name on PATH, an absolute path, or ~/\u2026. An npm install's launcher (codex.js, or codex.cmd on Windows) is followed to the codex executable it starts; if Filos can't find it on Windows, set this to that codex.exe (under %APPDATA%\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin). Read from user settings only, so a repository can't choose which program Filos runs."
+        },
+        "filos.codex.model": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Codex model passed to --model. Empty uses Codex's default model. With a ChatGPT account Codex can't use every model (an API-only model fails with \"not supported when using Codex with a ChatGPT account\"). Read from user settings only."
+        },
+        "filos.codex.useUserConfig": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "description": "Load ~/.codex/config.toml (needed for a custom model provider such as company SSO). Filos's read-only lockdown still applies. Off (the default): Filos ignores that file, so its model and other settings don't apply; Codex still uses your login. Read from user settings only."
         },
         "filos.agentTimeoutSeconds": {
           "type": "number",
@@ -90,7 +118,7 @@
           "minimum": 1,
           "maximum": 3600,
           "scope": "machine",
-          "description": "Kill the agent CLI after this many seconds (at most 3600). Read from user settings only."
+          "description": "Kill the agent CLI (Claude Code or Codex) after this many seconds (at most 3600). Read from user settings only."
         },
         "filos.gh.path": {
           "type": "string",
@@ -134,9 +162,13 @@
       "supported": "limited",
       "description": "The bundled sample works anywhere, and so does reviewing a pull request by its URL: its code goes into Filos's own storage. Reviewing the current branch, or listing the workspace repository's pull requests, runs git and gh in the folder, so it needs a trusted workspace.",
       "restrictedConfigurations": [
+        "filos.provider",
         "filos.claude.path",
         "filos.claude.model",
         "filos.claude.maxBudgetUsd",
+        "filos.codex.path",
+        "filos.codex.model",
+        "filos.codex.useUserConfig",
         "filos.agentTimeoutSeconds",
         "filos.gh.path"
       ]

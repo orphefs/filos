@@ -1,15 +1,19 @@
 // Review controls in the header: Fast | Didactic mode, the review depth (the agent's proposal, which
-// the reviewer can override), and in didactic mode the coverage meter. Progress is coverage of the
-// map, never points.
+// the reviewer can override), in didactic mode the coverage meter, and, quietly at the end, which
+// agent CLI the agent steps run on, with a way to choose another. Progress is coverage of the map,
+// never points.
 
 import { DEPTHS, type Depth } from '../contract/questions';
 import type { Mode, ReviewSnapshot } from '../review/types';
 import { h } from './dom';
+import { agentName } from './paneContext';
 import { depthWord } from './questions';
 
 export interface ControlsHandlers {
   setMode(mode: Mode): void;
   setDepth(depth: Depth): void;
+  /** "Choose Agent CLI…" in the host (a quick pick of Claude Code and Codex). */
+  chooseAgent(): void;
 }
 
 const DEPTH_HELP: Record<Depth, string> = {
@@ -29,6 +33,8 @@ export class ReviewControls {
   private readonly depthBtn: HTMLButtonElement;
   private readonly depthMenu: HTMLElement;
   private readonly coverage: HTMLElement;
+  private readonly agentWrap: HTMLElement;
+  private readonly agentBtn: HTMLButtonElement;
   private review?: ReviewSnapshot;
   private menuOpen = false;
 
@@ -60,7 +66,11 @@ export class ReviewControls {
     const depthWrap = h('div', { class: 'depth-wrap' }, this.depthBtn, this.depthMenu);
 
     this.coverage = h('div', { class: 'coverage', hidden: true });
-    this.el = h('div', { class: 'review-controls', hidden: true }, modeGroup, depthWrap, this.coverage);
+    this.agentBtn = h('button', { type: 'button', class: 'agent-button', title: 'Choose the agent CLI Filos runs: Claude Code or Codex' });
+    this.agentBtn.addEventListener('click', () => this.handlers.chooseAgent());
+    // Takes what is left of the row (it never adds one of its own unless the row is nearly full).
+    this.agentWrap = h('div', { class: 'agent-wrap', hidden: true }, this.agentBtn);
+    this.el = h('div', { class: 'review-controls', hidden: true }, modeGroup, depthWrap, this.coverage, this.agentWrap);
   }
 
   update(review: ReviewSnapshot | undefined): void {
@@ -77,6 +87,14 @@ export class ReviewControls {
       h('span', { class: 'caret', 'aria-hidden': 'true' }, '▾'),
     );
     if (this.menuOpen) this.fillMenu(this.depthMenu.contains(document.activeElement));
+
+    // Only a host that says which agent it runs gets the indicator.
+    this.agentWrap.hidden = !review.agentName;
+    if (review.agentName) {
+      const name = agentName(review);
+      this.agentBtn.replaceChildren(h('span', { class: 'agent-label' }, 'Agent: '), h('strong', {}, name), h('span', { class: 'caret', 'aria-hidden': 'true' }, '▾'));
+      this.agentBtn.setAttribute('aria-label', `Agent: ${name}. Choose another agent CLI`);
+    }
 
     const { explored, total } = review.coverage;
     this.coverage.hidden = review.mode !== 'didactic' || !total;

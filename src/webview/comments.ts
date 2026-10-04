@@ -6,7 +6,7 @@
 import { SEVERITY_LABEL } from '../review/github';
 import type { DraftComment } from '../review/types';
 import { h } from './dom';
-import { costNote, isPosted, nodeLabel, paneButton, spinnerLine, uid, type PaneContext } from './paneContext';
+import { agentName, costNote, isPosted, nodeLabel, paneButton, spinnerLine, uid, writtenBy, type PaneContext } from './paneContext';
 
 
 function origin(c: DraftComment, ctx: PaneContext): string {
@@ -17,18 +17,20 @@ function origin(c: DraftComment, ctx: PaneContext): string {
       return q ? `From your call on: ${oneLine(q.prompt, 90)}` : 'From your answers';
     }
     case 'agent':
-      return 'Drafted by Claude Code from your answers';
+      return `Drafted by ${writtenBy(c.origin.agentName)} from your answers`;
     case 'note':
       return 'Your note';
   }
 }
 
 /** Why the agent's buttons are disabled: only agent-sourced reviews have an agent (the sample doesn't). */
-const NO_AGENT = 'This review has no agent: it is the hand-written sample. Open it with “Review Sample PR with Agent” to work with Claude Code.';
+function noAgent(ctx: PaneContext): string {
+  return `This review has no agent: it is the hand-written sample. Open it with “Review Sample PR with Agent” to work with ${agentName(ctx.review)}.`;
+}
 
 /** The agent note under a button: its cost, or why it can't be used here. */
 function agentNote(ctx: PaneContext, id: string): HTMLElement {
-  return ctx.review.agentAvailable ? costNote(id) : h('span', { class: 'muted small no-agent-note', id }, NO_AGENT);
+  return ctx.review.agentAvailable ? costNote(id, ctx.review) : h('span', { class: 'muted small no-agent-note', id }, noAgent(ctx));
 }
 
 function oneLine(text: string, max: number): string {
@@ -162,11 +164,12 @@ function amendEditor(c: DraftComment, ctx: PaneContext): HTMLElement {
 
 function thread(c: DraftComment, ctx: PaneContext): HTMLElement {
   const { posted, frozen } = lockOf(c, ctx);
-  const box = h('section', { class: 'thread', 'aria-label': 'Discussion with Claude Code' });
+  const agent = agentName(ctx.review);
+  const box = h('section', { class: 'thread', 'aria-label': `Discussion with ${agent}` });
   if (c.thread.length) {
     const list = h('ol', { class: 'thread-list' });
     c.thread.forEach((m, i) => {
-      const li = h('li', { class: `msg msg--${m.role}` }, h('p', { class: 'msg-who' }, m.role === 'user' ? 'You' : 'Claude Code'), h('p', { class: 'msg-text' }, m.text));
+      const li = h('li', { class: `msg msg--${m.role}` }, h('p', { class: 'msg-who' }, m.role === 'user' ? 'You' : writtenBy(m.agentName, true)), h('p', { class: 'msg-text' }, m.text));
       if (m.role === 'agent' && m.proposal) {
         const inUse = m.proposal.trim() === c.body.trim();
         li.append(
@@ -187,13 +190,13 @@ function thread(c: DraftComment, ctx: PaneContext): HTMLElement {
     });
     box.append(list);
   } else if (ctx.review.agentAvailable) {
-    box.append(h('p', { class: 'muted small' }, 'Ask Claude Code to sharpen this comment, check a claim, or say it more kindly. It can propose a rewrite you can use.'));
+    box.append(h('p', { class: 'muted small' }, `Ask ${agent} to sharpen this comment, check a claim, or say it more kindly. It can propose a rewrite you can use.`));
   }
-  if (c.threadPending) box.append(spinnerLine('Claude is replying…'));
+  if (c.threadPending) box.append(spinnerLine(`${agentName(ctx.review, true)} is replying…`));
 
   const key = `thread:${c.id}`;
   const noteId = uid('cost');
-  const ta = ctx.drafts.textarea(key, { class: 'thread-input', rows: 2, 'aria-label': 'Message to Claude Code about this comment', placeholder: 'e.g. Make this shorter and suggest a fix' });
+  const ta = ctx.drafts.textarea(key, { class: 'thread-input', rows: 2, 'aria-label': `Message to ${agent} about this comment`, placeholder: 'e.g. Make this shorter and suggest a fix' });
   const send = paneButton('Send', `c:${c.id}:send`, () => {
     const text = ctx.drafts.get(key).trim();
     if (!text) {
@@ -283,7 +286,7 @@ function noteBox(ctx: PaneContext): HTMLElement {
 
 function agentBox(ctx: PaneContext): HTMLElement {
   const noteId = uid('cost');
-  const sec = h('section', { class: 'pane-section agent-box', 'aria-label': 'Draft comments with Claude Code' });
+  const sec = h('section', { class: 'pane-section agent-box', 'aria-label': `Draft comments with ${agentName(ctx.review)}` });
   const busy = !!ctx.review.draftingPending;
   // The button stays while the agent works (disabled), so keyboard focus has somewhere to stay.
   sec.append(
@@ -297,7 +300,7 @@ function agentBox(ctx: PaneContext): HTMLElement {
       agentNote(ctx, noteId),
     ),
     busy
-      ? spinnerLine('Claude is drafting comments from your answers…')
+      ? spinnerLine(`${agentName(ctx.review, true)} is drafting comments from your answers…`)
       : h('p', { class: 'muted small' }, 'Turns your answers so far into draft comments you can accept, change or drop.'),
   );
   return sec;

@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import { registerAgentTests } from './agent.test';
 import { registerBranchTests } from './branch.test';
 import { registerClickTests } from './clicks.test';
+import { registerCodexTests } from './codex.test';
 import { registerDidacticTests } from './didactic.test';
 import { cdpPort, filos, shot, workbench } from './helpers';
 import { registerPullRequestTests } from './pr.test';
@@ -50,6 +51,9 @@ export async function run(): Promise<void> {
   // GitHub. Last: it adds a remote to the workspace while it runs and switches the fake gh to answer
   // from a pull request fixture.
   registerPullRequestTests();
+  // Codex as the agent CLI: filos.provider is set to codex for this suite only (and back to the
+  // default afterwards), on its own pull request (#11) of a second local stand-in for GitHub.
+  registerCodexTests();
 
   const failures = await new Promise<number>((resolve) => mocha.run(resolve));
   if (failures > 0) throw new Error(`${failures} e2e test${failures === 1 ? '' : 's'} failed`);

@@ -2,8 +2,8 @@
 // Agent CLIs run for minutes and may start helper processes, so we kill the whole process group.
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { statSync } from 'node:fs';
-import { win32 } from 'node:path';
+import { accessSync, constants as fsConstants, statSync } from 'node:fs';
+import { posix, win32 } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 export interface RunOptions {
@@ -42,6 +42,17 @@ export interface RunResult {
   spawnError?: NodeJS.ErrnoException;
 }
 
+/**
+ * A copy of `base` without the variables `drop` names (matched case-insensitively, as Windows
+ * does), plus `extra`. For variables a parent agent session or a debug setup leaves behind that
+ * would change how a child CLI behaves.
+ */
+export function scrubEnv(base: NodeJS.ProcessEnv, drop: (upperName: string) => boolean, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(base)) if (!drop(k.toUpperCase())) env[k] = v;
+  return { ...env, ...extra };
+}
+
 const MiB = 1024 * 1024;
 /** setTimeout fires almost at once for delays above 2^31-1 ms, so a huge timeout must be capped, not passed on. */
 const MAX_TIMER_MS = 2_147_483_647;
@@ -49,23 +60,45 @@ const MAX_TIMER_MS = 2_147_483_647;
 export interface CommandLookup {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
+  /** Whether a candidate is a file that can be run (default: a regular file, executable on POSIX). */
   isFile?: (path: string) => boolean;
+  /**
+   * Windows only: the extensions to try, in order, instead of PATHEXT's .com and .exe. For finding an
+   * npm launcher (codex.cmd) whose real executable Filos then starts itself.
+   */
+  windowsExts?: readonly string[];
 }
 
+/** What execvp searches when PATH is unset. */
+const DEFAULT_POSIX_PATH = '/usr/bin:/bin';
+
 /**
- * The executable to spawn for a command. On Windows a bare name is looked up in the child's cwd
- * before PATH, so a git.exe or claude.exe committed to the repo under review would run instead of
- * the real one; there we search absolute PATH entries ourselves. Undefined means not found.
- * Elsewhere (and for anything with a directory part) the command is returned unchanged.
+ * The executable to spawn for a command: undefined when it isn't found. A bare name is never looked
+ * up relative to the child's cwd, which is often the repo under review: Windows searches the cwd
+ * before PATH, and on every OS an empty or relative PATH entry ("", ".", "bin") resolves against
+ * it, so a git, claude or codex committed to the repo would run instead of the real one. So we
+ * search the absolute PATH entries ourselves and spawn the absolute path. A command with a
+ * directory part is returned unchanged.
  */
 export function resolveCommand(command: string, o: CommandLookup = {}): string | undefined {
-  if ((o.platform ?? process.platform) !== 'win32' || /[\\/]/.test(command)) return command;
   const env = o.env ?? process.env;
+  if ((o.platform ?? process.platform) !== 'win32') {
+    if (command.includes('/')) return command;
+    if (!command) return undefined;
+    const isExec = o.isFile ?? defaultIsExecutable;
+    for (const dir of (env.PATH ?? DEFAULT_POSIX_PATH).split(':')) {
+      if (!dir || !posix.isAbsolute(dir)) continue;
+      const candidate = posix.join(dir, command);
+      if (isExec(candidate)) return candidate;
+    }
+    return undefined;
+  }
+  if (/[\\/]/.test(command)) return command;
   const get = (name: string) => env[Object.keys(env).find((k) => k.toUpperCase() === name) ?? name];
   const isFile = o.isFile ?? defaultIsFile;
   // Only .com and .exe start without a shell (spawn refuses .cmd/.bat when shell is false).
   const runnable = (get('PATHEXT') ?? '.COM;.EXE').split(';').map((e) => e.trim().toLowerCase()).filter((e) => e === '.com' || e === '.exe');
-  const exts = [...(win32.extname(command) ? [''] : []), ...(runnable.length ? runnable : ['.com', '.exe'])];
+  const exts = [...(win32.extname(command) ? [''] : []), ...(o.windowsExts ?? (runnable.length ? runnable : ['.com', '.exe']))];
   for (const dir of (get('PATH') ?? '').split(';')) {
     // '' and '.' (and any relative entry) would mean the cwd again: the repo under review.
     const d = dir.trim().replace(/^"(.*)"$/, '$1');
@@ -78,9 +111,39 @@ export function resolveCommand(command: string, o: CommandLookup = {}): string |
   return undefined;
 }
 
+/**
+ * `env` with PATH reduced to its absolute entries. A child that looks a program up by name (the
+ * `#!/usr/bin/env node` line of an npm-installed CLI, git running a helper, an agent CLI running
+ * `git`) would otherwise find one in its cwd, the repo under review, through an empty or relative
+ * entry. Returns `env` itself when there is nothing to remove.
+ */
+export function absolutePathEnv(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
+  const win = platform === 'win32';
+  const key = win ? Object.keys(env).find((k) => k.toUpperCase() === 'PATH') : 'PATH';
+  const value = key === undefined ? undefined : env[key];
+  if (key === undefined || value === undefined) return env;
+  const sep = win ? ';' : ':';
+  const entries = value.split(sep);
+  const kept = entries.filter((e) => {
+    const d = win ? e.trim().replace(/^"(.*)"$/, '$1') : e;
+    return !!d && (win ? win32.isAbsolute(d) : posix.isAbsolute(d));
+  });
+  return kept.length === entries.length ? env : { ...env, [key]: kept.join(sep) };
+}
+
 function defaultIsFile(p: string): boolean {
   try {
     return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function defaultIsExecutable(p: string): boolean {
+  try {
+    if (!statSync(p).isFile()) return false;
+    accessSync(p, fsConstants.X_OK);
+    return true;
   } catch {
     return false;
   }
@@ -95,7 +158,7 @@ export function runProcess(o: RunOptions): Promise<RunResult> {
 
   const result: RunResult = { exitCode: null, signal: null, stdout: '', stderrTail: '', timedOut: false, aborted: false, overflow: false };
   if (o.signal?.aborted) return Promise.resolve({ ...result, aborted: true });
-  const command = resolveCommand(o.command);
+  const command = resolveCommand(o.command, o.env ? { env: o.env } : {});
   if (command === undefined) {
     const err: NodeJS.ErrnoException = Object.assign(new Error(`spawn ${o.command} ENOENT`), { code: 'ENOENT', path: o.command });
     return Promise.resolve({ ...result, spawnError: err });
@@ -106,7 +169,7 @@ export function runProcess(o: RunOptions): Promise<RunResult> {
     try {
       child = spawn(command, [...o.args], {
         cwd: o.cwd,
-        env: o.env ?? process.env,
+        env: absolutePathEnv(o.env ?? process.env),
         stdio: ['pipe', 'pipe', 'pipe'],
         // Own process group on POSIX, so a kill reaches helpers the CLI started.
         detached: process.platform !== 'win32',
@@ -177,7 +240,10 @@ export function runProcess(o: RunOptions): Promise<RunResult> {
     });
     // The CLI may exit before reading its prompt; that's reported through the exit code, not EPIPE.
     child.stdin!.on('error', () => {});
-    child.stdin!.end(o.stdin ?? '');
+    // A CLI that never started (not installed) has no reader: even an empty write would raise
+    // SIGPIPE, which VS Code's extension host logs as "Unexpected SIGPIPE". Close it unwritten.
+    if (child.pid === undefined) child.stdin?.destroy();
+    else child.stdin!.end(o.stdin ?? '');
 
     const finish = () => {
       if (settled) return;

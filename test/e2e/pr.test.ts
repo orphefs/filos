@@ -36,14 +36,14 @@ interface GhCall {
   ghHost?: string;
 }
 
-interface StepView {
+export interface StepView {
   state: string;
   label: string;
   detail: string;
 }
 
 /** The loading or error view with steps, as the webview draws it. */
-interface StatusView {
+export interface StatusView {
   kind: 'loading' | 'error';
   message: string;
   detail: string;
@@ -66,13 +66,13 @@ const READ_STATUS = `(d) => {
   };
 }`;
 
-const readStatus = (wb: Workbench) => wb.evalWebview<StatusView | null>(READ_STATUS);
+export const readStatus = (wb: Workbench) => wb.evalWebview<StatusView | null>(READ_STATUS);
 
 /**
  * Reads the steps view from the webview every few tens of milliseconds while a review starts,
  * keeping each distinct view, so a test can check what was shown and in which order.
  */
-class StatusRecorder {
+export class StatusRecorder {
   readonly seen: StatusView[] = [];
   private stopped = false;
   private readonly loop: Promise<void>;
@@ -108,13 +108,13 @@ class StatusRecorder {
   }
 }
 
-const RANK: Record<string, number> = { pending: 0, active: 1, done: 2 };
+export const RANK: Record<string, number> = { pending: 0, active: 1, done: 2 };
 
 /** One line per view, for assertion messages. */
-const describeViews = (views: StatusView[]) => views.map((v) => `${v.kind} "${v.message}" [${v.steps.map((s) => `${s.state}${s.detail ? `(${s.detail})` : ''}`).join(', ')}]`).join('\n  ');
+export const describeViews = (views: StatusView[]) => views.map((v) => `${v.kind} "${v.message}" [${v.steps.map((s) => `${s.state}${s.detail ? `(${s.detail})` : ''}`).join(', ')}]`).join('\n  ');
 
 /** VS Code's quick input (picker or input box) as drawn, or null while it is hidden. */
-interface QuickInputView {
+export interface QuickInputView {
   title: string;
   value: string;
   placeholder: string;
@@ -142,10 +142,10 @@ const READ_QUICK_INPUT = `(() => {
   };
 })()`;
 
-const quickInput = (wb: Workbench) => wb.evalPage<QuickInputView | null>(READ_QUICK_INPUT);
+export const quickInput = (wb: Workbench) => wb.evalPage<QuickInputView | null>(READ_QUICK_INPUT);
 
 /** Waits for the quick input to match, and makes sure its text box has keyboard focus (clicking it if not). */
-async function quickInputWhere(wb: Workbench, pred: (q: QuickInputView) => boolean, what: string, timeoutMs = 10_000): Promise<QuickInputView> {
+export async function quickInputWhere(wb: Workbench, pred: (q: QuickInputView) => boolean, what: string, timeoutMs = 10_000): Promise<QuickInputView> {
   let last: QuickInputView | null = null;
   const q = await waitFor(async () => {
     last = await quickInput(wb);
@@ -161,7 +161,7 @@ async function quickInputWhere(wb: Workbench, pred: (q: QuickInputView) => boole
 }
 
 /** ArrowDown until the highlighted row is the one wanted (separators are skipped by VS Code). */
-async function arrowDownTo(wb: Workbench, rowText: RegExp): Promise<void> {
+export async function arrowDownTo(wb: Workbench, rowText: RegExp): Promise<void> {
   for (let i = 0; i < 6; i++) {
     const q = await quickInput(wb);
     if (q?.rows.some((r) => r.focused && rowText.test(r.text))) return;

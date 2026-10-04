@@ -7,7 +7,7 @@ import type { Choice, Question } from '../contract/questions';
 import { answerFor, type AnswerState, type Attempt } from '../review/types';
 import { h } from './dom';
 import { fogIcon } from './render';
-import { answerable, commentFromQuestion, costNote, nodeLabel, nodeName, paneButton, spinnerLine, uid, type PaneContext } from './paneContext';
+import { agentName, answerable, commentFromQuestion, costNote, nodeLabel, nodeName, paneButton, spinnerLine, uid, writtenBy, type PaneContext } from './paneContext';
 
 const SEVERITY_WORD = { blocking: 'blocking', suggestion: 'suggestion', question: 'question', nit: 'nit' } as const;
 
@@ -176,7 +176,7 @@ function openArea(q: Question, a: AnswerState | undefined, ctx: PaneContext, can
 
   if (a?.pending) {
     // Focus waits here (where the feedback will appear) while the agent grades.
-    const line = spinnerLine('Claude is reading your answer…');
+    const line = spinnerLine(`${agentName(ctx.review, true)} is reading your answer…`);
     line.tabIndex = -1;
     line.dataset.focusKey = `q:${q.id}:feedback`;
     out.push(line);
@@ -234,7 +234,7 @@ function openArea(q: Question, a: AnswerState | undefined, ctx: PaneContext, can
       submit.click();
     }
   });
-  out.push(h('div', { class: 'answer-box' }, ta, h('div', { class: 'button-row' }, submit, agentGrades ? costNote(noteId) : null)));
+  out.push(h('div', { class: 'answer-box' }, ta, h('div', { class: 'button-row' }, submit, agentGrades ? costNote(noteId, ctx.review) : null)));
   return { history, input: out };
 }
 
@@ -246,7 +246,7 @@ function feedback(q: Question, a: AnswerState | undefined, ctx: PaneContext): HT
   const box = h('div', { class: `feedback verdict--${v.cls}`, tabindex: -1, 'data-focus-key': `q:${q.id}:feedback` });
   box.append(h('p', { class: 'verdict-line' }, h('span', { class: 'verdict-mark', 'aria-hidden': 'true' }, v.mark), h('strong', {}, v.text)));
   if (last.reply) box.append(h('p', { class: 'reply' }, last.reply));
-  if (last.by === 'agent') box.append(h('p', { class: 'reply-by' }, 'Feedback from Claude Code'));
+  if (last.by === 'agent') box.append(h('p', { class: 'reply-by' }, `Feedback from ${writtenBy(last.agentName)}`));
 
   if (v.cls === 'retry') {
     const again = paneButton('Try again', `q:${q.id}:again`, () => {
@@ -290,7 +290,7 @@ export function questionsPanel(ctx: PaneContext): Node[] {
   );
 
   const status = review.questionsStatus;
-  if (status.state === 'loading') out.push(spinnerLine('Claude Code is writing questions about this PR…'));
+  if (status.state === 'loading') out.push(spinnerLine(`${agentName(review, true)} is writing questions about this PR…`));
   else if (status.state === 'error') out.push(h('p', { class: 'notice notice--error', role: 'status' }, status.message || 'The questions could not be written.'));
   else if (status.state === 'none' && !all.length) out.push(h('p', { class: 'notice' }, status.message || 'No questions for this review.'));
 

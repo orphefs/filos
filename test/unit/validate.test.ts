@@ -400,3 +400,22 @@ function mulberry32(seed: number): () => number {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+
+describe('validateGraph: display text over its limit (repair mode)', () => {
+  it('is cut at a word with "…" and a warning; strict mode still refuses it; the input is untouched', () => {
+    const g = fixtureGraph() as unknown as { orientation: string; nodes: { label: string }[] };
+    g.orientation = `${'touches four modules '.repeat(40)}end`;
+    g.nodes[0].label = 'x'.repeat(100);
+    const orientation = g.orientation;
+    assert.equal(validateGraph(g, opts).ok, false);
+    const r = validateGraph(g, { ...opts, repair: true });
+    assert.ok(r.ok, r.ok ? '' : r.errors.join('\n'));
+    const kept = r.graph.orientation.slice(0, -1);
+    assert.ok([...r.graph.orientation].length <= 600 && r.graph.orientation.endsWith('…'), r.graph.orientation.slice(-40));
+    assert.ok(orientation.startsWith(kept) && orientation[kept.length] === ' ' && kept.length > 500, 'cut between words, near the limit');
+    assert.equal(r.graph.nodes[0].label, `${'x'.repeat(79)}…`, 'no space near the end: cut at the limit');
+    assert.ok(r.warnings.includes(`repaired: cut /orientation to 600 characters (it had ${orientation.length})`), r.warnings.join('\n'));
+    assert.ok(r.warnings.includes('repaired: cut /nodes/0/label to 80 characters (it had 100)'));
+    assert.equal(g.orientation, orientation);
+  });
+});

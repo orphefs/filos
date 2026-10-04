@@ -1,7 +1,7 @@
 // Validates untrusted question-set JSON: schema first (ajv), then the rules the schema can't express.
 // Agent output is checked in repair mode; the bundled fixture stays strict. See docs/questions-contract.md.
 
-import Ajv from 'ajv';
+import Ajv, { type ErrorObject } from 'ajv';
 import schema from '../../schema/question-set.schema.json';
 import type { ReviewGraph } from './graph';
 import { DEPTHS, type Choice, type CommentSeed, type Question, type QuestionSet } from './questions';
@@ -30,10 +30,13 @@ const schemaCheck = ajv.compile(schema);
 export function validateQuestionSet(input: unknown, graph: ReviewGraph, opts: ValidateQuestionsOptions = {}): QuestionSetValidation {
   const warnings: string[] = [];
   if (!schemaCheck(input)) {
-    const errors = (schemaCheck.errors ?? []).map(
-      (e) => `${e.instancePath || '(root)'} ${e.message ?? 'is invalid'}${e.params && 'allowedValues' in e.params ? `: ${(e.params as { allowedValues: unknown[] }).allowedValues.join(', ')}` : ''}`,
-    );
-    return { ok: false, errors, warnings };
+    const errors = (schemaCheck.errors ?? []).map(schemaError);
+    // Repair: schema problems confined to some questions drop those questions, like any other
+    // problem confined to one question; one bad field must not cost the whole set.
+    const pruned = opts.repair ? withoutBrokenQuestions(input, schemaCheck.errors ?? []) : undefined;
+    if (!pruned || !schemaCheck(pruned.set)) return { ok: false, errors, warnings };
+    warnings.push(...pruned.warnings);
+    input = pruned.set;
   }
   const set = structuredClone(input) as unknown as QuestionSet;
   const repair = !!opts.repair;
@@ -109,6 +112,33 @@ function choiceProblems(q: Question): string[] {
  * Harmless spellings ('./src/a.ts') are canonicalised. Repair keeps the body and drops what's wrong:
  * a bad file takes its line with it; a bad line alone leaves a file-level comment.
  */
+function schemaError(e: ErrorObject): string {
+  return `${e.instancePath || '(root)'} ${e.message ?? 'is invalid'}${e.params && 'allowedValues' in e.params ? `: ${(e.params as { allowedValues: unknown[] }).allowedValues.join(', ')}` : ''}`;
+}
+
+/**
+ * The set without the questions the schema errors point into, or undefined when some error lies
+ * outside a question (the set itself is broken) or nothing would be left. Each drop is a warning.
+ */
+function withoutBrokenQuestions(input: unknown, errors: readonly ErrorObject[]): { set: unknown; warnings: string[] } | undefined {
+  const questions = (input as { questions?: unknown } | null)?.questions;
+  if (!errors.length || !Array.isArray(questions)) return undefined;
+  const bad = new Map<number, string[]>();
+  for (const e of errors) {
+    const m = /^\/questions\/(\d+)(?:\/|$)/.exec(e.instancePath);
+    if (!m) return undefined;
+    const i = Number(m[1]);
+    bad.set(i, [...(bad.get(i) ?? []), `${e.instancePath.slice(m[0].replace(/\/$/, '').length) || '(the question)'} ${e.message ?? 'is invalid'}`]);
+  }
+  if (bad.size >= questions.length) return undefined;
+  const warnings = [...bad].map(([i, problems]) => {
+    const id = (questions[i] as { id?: unknown } | null)?.id;
+    const name = typeof id === 'string' && id.trim() ? `question "${id.slice(0, 80)}"` : `question #${i + 1}`;
+    return `repaired: dropped ${name}, which broke the question-set schema (${problems.join('; ')})`;
+  });
+  return { set: { ...(input as object), questions: questions.filter((_, i) => !bad.has(i)) }, warnings };
+}
+
 function checkSeed(seed: CommentSeed, at: string, lineCount: (path: string) => number | undefined, fix: (problem: string, repaired: string) => void): void {
   if (seed.file === undefined) {
     if (seed.line !== undefined) {

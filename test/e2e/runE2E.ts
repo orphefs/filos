@@ -99,7 +99,7 @@ function makeWorkspace(dir: string): void {
   writeFileSync(join(dir, 'README.md'), '# @acme/ledger\n\nAn uncommitted edit, so the review has something to warn about.\n');
 }
 
-function userSettings(fakeClaude: string, fakeGh: string): Record<string, unknown> {
+function userSettings(fakeClaude: string, fakeCodex: string, fakeGh: string): Record<string, unknown> {
   return {
     'workbench.startupEditor': 'none',
     'workbench.tips.enabled': false,
@@ -115,6 +115,8 @@ function userSettings(fakeClaude: string, fakeGh: string): Record<string, unknow
     'git.openRepositoryInParentFolders': 'never',
     // The agent path runs the fake CLI; its mode is switched per test through process.env.
     'filos.claude.path': fakeClaude,
+    // The Codex suite switches filos.provider to codex for its own tests; this is the CLI it runs then.
+    'filos.codex.path': fakeCodex,
     'filos.agentTimeoutSeconds': 60,
     // Branch reviews look their pull request up with gh, and posting runs `gh api`: never the real
     // one from a test. The fake answers a PR (acme/ledger#42) and records what it was sent.
@@ -147,8 +149,9 @@ async function main(): Promise<number> {
   mkdirSync(join(userData, 'User'), { recursive: true });
 
   const fakeClaude = join(ROOT, 'test', 'fixtures', 'fake-claude', 'claude');
+  const fakeCodex = join(ROOT, 'test', 'fixtures', 'fake-codex', 'codex');
   const fakeGh = join(ROOT, 'test', 'fixtures', 'fake-gh', 'gh');
-  writeFileSync(join(userData, 'User', 'settings.json'), JSON.stringify(userSettings(fakeClaude, fakeGh), null, 2));
+  writeFileSync(join(userData, 'User', 'settings.json'), JSON.stringify(userSettings(fakeClaude, fakeCodex, fakeGh), null, 2));
   makeWorkspace(workspace);
   let extensionPath = ROOT;
   if (vsix) {
@@ -174,6 +177,7 @@ async function main(): Promise<number> {
         FILOS_E2E_CDP_PORT: String(cdpPort),
         FILOS_E2E_GREP: grep ?? '',
         FILOS_E2E_FAKE_CLAUDE: fakeClaude,
+        FILOS_E2E_FAKE_CODEX: fakeCodex,
         FILOS_E2E_FAKE_GH: fakeGh,
         // A scratch directory of this run (removed afterwards), e.g. for the fake gh's call record.
         FILOS_E2E_RUN: run,
@@ -181,6 +185,10 @@ async function main(): Promise<number> {
         FAKE_CLAUDE_GRAPH: join(ROOT, 'fixtures', 'sample-graph.json'),
         // The questions task answers the sample's hand-written set, valid for the graph above.
         FAKE_CLAUDE_QUESTIONS: join(ROOT, 'fixtures', 'sample-questions.json'),
+        // The fake codex answers the same graph and questions (as a strict-mode model: nulls for absent fields).
+        FAKE_CODEX_MODE: 'ok',
+        FAKE_CODEX_GRAPH: join(ROOT, 'fixtures', 'sample-graph.json'),
+        FAKE_CODEX_QUESTIONS: join(ROOT, 'fixtures', 'sample-questions.json'),
         FAKE_GH_MODE: 'ok',
       },
       launchArgs: [
