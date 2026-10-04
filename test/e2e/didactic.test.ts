@@ -28,6 +28,11 @@ const gateShown = (wb: Workbench) => wb.evalWebview<boolean>(`(d) => d.querySele
 export function registerDidacticTests(): void {
   describe('Didactic mode on the sample', function () {
     let wb: Workbench;
+    /** Presses the toolbar's Fit, so the whole map is on screen, and waits for the graph to settle. */
+    const fitWholeGraph = async () => {
+      await wb.clickWebview('.toolbar button', { text: 'Fit' });
+      await graphSettled(wb);
+    };
 
     before(async function () {
       if (!cdpPort()) this.skip();
@@ -148,6 +153,9 @@ export function registerDidacticTests(): void {
     it('a territory still in fog opens its own gate; "Not now" leaves the code as it was', async () => {
       const api = await filos();
       await graphSettled(wb);
+      // The automatic fit keeps the selection (money) readable and, in a pane this narrow, crops
+      // invoice off the left edge. Fit shows the whole map first, as a person would.
+      await fitWholeGraph();
       await wb.clickWebview(nodeSel('invoice'));
       await snapshotWhere((x) => x.gate?.nodeId === 'invoice', 'the gate into invoice');
       await waitFor(() => gateShown(wb), 'the gate in the pane');
@@ -168,6 +176,7 @@ export function registerDidacticTests(): void {
       assert.equal(api.getGlobalState()['filos.mode'], 'fast');
       await wb.waitForWebview<boolean>(`(d) => d.querySelectorAll('.layer-nodes [data-fog]').length === 0 && d.querySelector('.coverage')?.hidden === true`, 'the fog to lift', 5_000);
       await graphSettled(wb);
+      await fitWholeGraph();
 
       const t = Date.now();
       await wb.clickWebview(nodeSel('invoice'), { avoid: '[data-chevron]' });

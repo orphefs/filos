@@ -26,6 +26,15 @@ const REMOTE_STALE_MS = 10 * 60_000;
 const UNWRITTEN_STALE_MS = 10_000;
 const POLL_MS = 250;
 
+/**
+ * This machine's name, read once: macOS changes it with the network (MacBook-Pro.local at home, a
+ * DHCP name at the office), and a lease this process took before the change must still read as its
+ * own, not as another machine's (which would keep its old checkouts from being tidied). Another
+ * window that read the name before a change sees this one's locks as remote: still live while
+ * they are refreshed, only taken over later after a crash.
+ */
+const HOST = hostname();
+
 interface Owner {
   pid: number;
   host: string;
@@ -84,14 +93,14 @@ export function pidAlive(pid: number): boolean {
 export function isLive(owner: Owner | undefined, mtimeMs: number, now = Date.now()): boolean {
   const age = now - mtimeMs;
   if (!owner) return age < UNWRITTEN_STALE_MS;
-  if (owner.host !== hostname()) return age < REMOTE_STALE_MS;
+  if (owner.host !== HOST) return age < REMOTE_STALE_MS;
   // One of ours that we no longer hold was left behind (an earlier run of this extension host).
   if (owner.pid === process.pid) return held.has(owner.token);
   return pidAlive(owner.pid) && age < LOCAL_STALE_MS;
 }
 
 function newOwner(): Owner {
-  return { pid: process.pid, host: hostname(), token: randomBytes(8).toString('hex') };
+  return { pid: process.pid, host: HOST, token: randomBytes(8).toString('hex') };
 }
 
 /** Creates `file` with the owner in it, only if it doesn't exist. False when it does. */
@@ -173,7 +182,7 @@ function hold(file: string, owner: Owner): Held {
 }
 
 function describeHolder(owner: Owner | undefined): string {
-  if (owner && owner.host !== hostname()) return `VS Code on ${owner.host.replace(/[^\w.-]/g, '').slice(0, 60) || 'another machine'}`;
+  if (owner && owner.host !== HOST) return `VS Code on ${owner.host.replace(/[^\w.-]/g, '').slice(0, 60) || 'another machine'}`;
   return 'another VS Code window';
 }
 
@@ -283,7 +292,7 @@ export function leasesElsewhere(dir: string, name?: string): number {
       }
       continue;
     }
-    if (seen.owner && seen.owner.pid === process.pid && seen.owner.host === hostname()) continue;
+    if (seen.owner && seen.owner.pid === process.pid && seen.owner.host === HOST) continue;
     n++;
   }
   return n;

@@ -5,7 +5,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { ReviewGraph } from '../contract/graph';
 import { validateGraph } from '../contract/validate';
-import { runProcess, type RunResult } from './exec';
+import { offPathHint, runProcess, type RunResult } from './exec';
 import { safeProgressText } from './progress';
 import { buildPrompt } from './prompt';
 import { ProviderError, type AgentProvider, type AgentTask, type AskRequest, type AskResult, type ComprehensionRequest, type ComprehensionResult } from './provider';
@@ -426,7 +426,8 @@ export class ClaudeCliProvider implements AgentProvider {
     if (run.spawnError) {
       const code = run.spawnError.code;
       if (code === 'ENOENT' || code === 'EACCES') {
-        throw new ProviderError('notInstalled', `Claude Code CLI not found at "${this.opts.claudePath}". Install it, or set filos.claude.path.`, run.spawnError.message);
+        const hint = offPathHint(this.opts.claudePath, 'filos.claude.path', { env: childEnv(process.env, this.opts.env) });
+        throw new ProviderError('notInstalled', `Claude Code CLI not found at "${this.opts.claudePath}". Install it, or set filos.claude.path.${hint}`, run.spawnError.message);
       }
       throw new ProviderError('failed', `Could not start Claude Code: ${run.spawnError.message}`);
     }

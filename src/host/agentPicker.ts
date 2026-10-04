@@ -5,6 +5,7 @@
 
 import * as vscode from 'vscode';
 import { createProvider, ProviderError, type AgentProvider } from '../agent';
+import { foundOffPath } from '../agent/exec';
 import { safeProgressText } from '../agent/progress';
 import { executableOf, pathSettingOf, PROVIDER_IDS, PROVIDER_NAMES, readProviderConfig, readProviderId, type ProviderId } from './config';
 
@@ -206,7 +207,11 @@ async function tellNext(c: Candidate, status: AgentStatus, changed: boolean, opt
   }
   if (status.kind === 'notInstalled' || status.kind === 'badSettings') {
     const open = 'Open Settings';
-    const why = status.kind === 'notInstalled' ? `Filos can't find its CLI ("${notice(c.executable ?? '', 120)}"). Install it, or set ${setting}.` : capital(notice(status.reason));
+    const found = status.kind === 'notInstalled' && c.executable ? foundOffPath(c.executable) : undefined;
+    const why =
+      status.kind === 'notInstalled'
+        ? `Filos can't find its CLI ("${notice(c.executable ?? '', 120)}"). ${found ? `It is at ${notice(found, 160)}, which isn't on the PATH VS Code started with: set ${setting} to that path.` : `Install it, or set ${setting}.`}`
+        : capital(notice(status.reason));
     const choice = await vscode.window.showWarningMessage(`${now} ${why}`, open);
     if (choice === open) await vscode.commands.executeCommand('workbench.action.openSettings', `filos.${c.id}.`);
     return;

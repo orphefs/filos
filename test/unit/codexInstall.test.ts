@@ -1,6 +1,6 @@
 // locateCodex (src/agent/codexInstall.ts): which executable Filos starts for filos.codex.path, and
 // which of Codex's own files its sandbox must be able to read. npm layouts on a real (temporary)
-// file system for Linux; Windows through an injected one.
+// file system for Linux; macOS and Windows through an injected one.
 
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -60,6 +60,17 @@ describe('locateCodex on Linux', () => {
     }
   });
 
+  it('a symlinked platform package (pnpm links it in from its store): the sandbox may read the real folder', () => {
+    const { prefix, bin } = npmPrefix('none');
+    const store = join(prefix, 'store', '@openai+codex-linux-x64@0.160.0', 'node_modules', '@openai', 'codex-linux-x64');
+    const vendor = join(store, 'vendor', TRIPLE);
+    file(join(vendor, 'bin', 'codex'));
+    const link = join(prefix, 'lib', 'node_modules', '@openai', 'codex', 'node_modules', '@openai', 'codex-linux-x64');
+    mkdirSync(dirname(link), { recursive: true });
+    symlinkSync(store, link);
+    assert.deepEqual(locateCodex('codex', linux(bin)), { command: join(link, 'vendor', TRIPLE, 'bin', 'codex'), readable: [vendor] });
+  });
+
   it('npm without its binary: the launcher (it reports the missing package itself), nothing extra readable', () => {
     const { bin } = npmPrefix('none');
     assert.deepEqual(locateCodex('codex', linux(bin)), { command: join(bin, 'codex'), readable: [] });
@@ -87,6 +98,83 @@ describe('locateCodex on Linux', () => {
       process.chdir(prev);
     }
     assert.equal(locateCodex(join(scratch, 'no-such-codex'), linux('')), undefined);
+  });
+});
+
+describe('locateCodex on macOS (injected file system)', () => {
+  /** A file system of `files` and `links` (path → target, a file or a folder prefix); realpath follows the links. */
+  function mac(o: { files: string[]; links?: Record<string, string>; arch: 'arm64' | 'x64'; PATH?: string }) {
+    const links = o.links ?? {};
+    const realpath = (p: string): string => {
+      for (const [from, to] of Object.entries(links)) if (p === from || p.startsWith(from + '/')) return realpath(to + p.slice(from.length));
+      return p;
+    };
+    const files = new Set(o.files.map(realpath));
+    const has = (p: string) => files.has(realpath(p));
+    return {
+      platform: 'darwin' as const,
+      arch: o.arch,
+      env: { PATH: o.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin' },
+      isFile: has,
+      exists: has,
+      realpath,
+      readText: (p: string) => (/\/node_modules\/@openai\/codex\/package\.json$/.test(realpath(p)) ? JSON.stringify({ name: '@openai/codex' }) : undefined),
+    };
+  }
+  const npmAt = (prefix: string) => {
+    const pkg = `${prefix}/lib/node_modules/@openai/codex`;
+    const vendor = (pkgName: string, triple: string) => `${pkg}/node_modules/@openai/${pkgName}/vendor/${triple}`;
+    return {
+      pkg,
+      links: { [`${prefix}/bin/codex`]: `${pkg}/bin/codex.js` },
+      launcher: `${pkg}/bin/codex.js`,
+      arm: vendor('codex-darwin-arm64', 'aarch64-apple-darwin'),
+      intel: vendor('codex-darwin-x64', 'x86_64-apple-darwin'),
+    };
+  };
+
+  it('npm with Homebrew\'s Node on Apple silicon: the aarch64-apple-darwin binary; its vendor folder readable', () => {
+    const n = npmAt('/opt/homebrew');
+    const o = mac({ files: [n.launcher, `${n.arm}/bin/codex`], links: n.links, arch: 'arm64' });
+    assert.deepEqual(locateCodex('codex', o), { command: `${n.arm}/bin/codex`, readable: [n.arm] });
+    assert.deepEqual(locateCodex('/opt/homebrew/bin/codex', o), { command: `${n.arm}/bin/codex`, readable: [n.arm] }, 'filos.codex.path set to it');
+  });
+
+  it('npm on an Intel Mac (/usr/local): the x86_64-apple-darwin binary', () => {
+    const n = npmAt('/usr/local');
+    const o = mac({ files: [n.launcher, `${n.intel}/bin/codex`], links: n.links, arch: 'x64' });
+    assert.deepEqual(locateCodex('codex', o), { command: `${n.intel}/bin/codex`, readable: [n.intel] });
+  });
+
+  it("VS Code's Intel build on Apple silicon (Rosetta) with only the arm64 package: the arm64 binary, which macOS runs; its own architecture when both are there", () => {
+    const n = npmAt('/opt/homebrew');
+    assert.deepEqual(locateCodex('codex', mac({ files: [n.launcher, `${n.arm}/bin/codex`], links: n.links, arch: 'x64' })), { command: `${n.arm}/bin/codex`, readable: [n.arm] });
+    assert.deepEqual(locateCodex('codex', mac({ files: [n.launcher, `${n.arm}/bin/codex`, `${n.intel}/bin/codex`], links: n.links, arch: 'x64' })), { command: `${n.intel}/bin/codex`, readable: [n.intel] });
+    // Linux has no such fallback: an arm64 binary can't run on x64 there.
+    assert.deepEqual(
+      locateCodex('/p/bin/codex', { ...mac({ files: ['/p/lib/node_modules/@openai/codex/bin/codex.js', '/p/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex'], links: { '/p/bin/codex': '/p/lib/node_modules/@openai/codex/bin/codex.js' }, arch: 'x64' }), platform: 'linux' }),
+      { command: '/p/bin/codex', readable: [] },
+    );
+  });
+
+  it('a symlinked platform package (pnpm): the readable folder is its real path, which is what Seatbelt matches', () => {
+    const n = npmAt('/Users/me/Library/pnpm/global/5');
+    const store = '/Users/me/Library/pnpm/global/5/.pnpm/@openai+codex-darwin-arm64@0.160.0/node_modules/@openai/codex-darwin-arm64';
+    const link = `${n.pkg}/node_modules/@openai/codex-darwin-arm64`;
+    const o = mac({ files: [n.launcher, `${store}/vendor/aarch64-apple-darwin/bin/codex`], links: { ...n.links, [link]: store }, arch: 'arm64', PATH: '/usr/bin:/bin:/Users/me/Library/pnpm/global/5/bin' });
+    assert.deepEqual(locateCodex('codex', o), { command: `${n.arm}/bin/codex`, readable: [`${store}/vendor/aarch64-apple-darwin`] });
+  });
+
+  it('Homebrew (formula or cask): /opt/homebrew/bin/codex is a link to the native binary, readable by its Cellar or Caskroom path', () => {
+    const cellar = '/opt/homebrew/Cellar/codex/0.160.0/bin/codex';
+    assert.deepEqual(locateCodex('codex', mac({ files: [cellar], links: { '/opt/homebrew/bin/codex': cellar }, arch: 'arm64' })), { command: '/opt/homebrew/bin/codex', readable: [cellar] });
+    const cask = '/opt/homebrew/Caskroom/codex/0.160.0/codex-aarch64-apple-darwin';
+    assert.deepEqual(locateCodex('codex', mac({ files: [cask], links: { '/opt/homebrew/bin/codex': cask }, arch: 'arm64' })), { command: '/opt/homebrew/bin/codex', readable: [cask] });
+  });
+
+  it('VS Code started from the Dock with a PATH that lacks /opt/homebrew/bin: not found (the message then names it, see offPathHint)', () => {
+    const cellar = '/opt/homebrew/Cellar/codex/0.160.0/bin/codex';
+    assert.equal(locateCodex('codex', mac({ files: [cellar], links: { '/opt/homebrew/bin/codex': cellar }, arch: 'arm64', PATH: '/usr/bin:/bin:/usr/sbin:/sbin' })), undefined);
   });
 });
 

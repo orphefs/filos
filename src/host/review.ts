@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import * as vscode from 'vscode';
 import { createProvider, ProviderError, type AgentProvider, type ProviderConfig } from '../agent';
-import { resolveCommand } from '../agent/exec';
+import { offPathHint, resolveCommand, withCommandDir } from '../agent/exec';
 import { safeProgressText } from '../agent/progress';
 import type { ReviewGraph } from '../contract/graph';
 import { validateGraph } from '../contract/validate';
@@ -951,11 +951,11 @@ export class ReviewController implements vscode.Disposable {
     }
     const shellPath = resolveCommand(gh);
     if (!shellPath) {
-      void vscode.window.showErrorMessage(`Filos: can't find the GitHub CLI ("${safeProgressText(gh, 120)}") on PATH. Install it, or set "filos.gh.path".`);
+      void vscode.window.showErrorMessage(`Filos: can't find the GitHub CLI ("${safeProgressText(gh, 120)}") on PATH. Install it, or set "filos.gh.path".${offPathHint(gh, 'filos.gh.path')}`);
       return;
     }
     const args = ['auth', 'login', ...(host && HOST.test(host) ? ['--hostname', host] : [])];
-    const terminal = vscode.window.createTerminal({ name, shellPath, shellArgs: args, cwd: homedir() });
+    const terminal = vscode.window.createTerminal({ name, shellPath, shellArgs: args, cwd: homedir(), ...loginTerminalEnv(shellPath) });
     terminal.show();
     this.log.info(`opened "${name}" terminal: ${gh} ${args.join(' ')}`);
   }
@@ -991,11 +991,11 @@ export class ReviewController implements vscode.Disposable {
     const { command, args } = provider.login;
     const shellPath = resolveCommand(command);
     if (!shellPath) {
-      void vscode.window.showErrorMessage(`Filos: can't find the ${provider.displayName} CLI ("${safeProgressText(command, 120)}") on PATH. Install it, or set "${pathSettingOf(id)}".`);
+      void vscode.window.showErrorMessage(`Filos: can't find the ${provider.displayName} CLI ("${safeProgressText(command, 120)}") on PATH. Install it, or set "${pathSettingOf(id)}".${offPathHint(command, pathSettingOf(id))}`);
       return;
     }
     // Home, not the repo under review, so nothing in the PR's checkout can shape the login.
-    const terminal = vscode.window.createTerminal({ name, shellPath, shellArgs: [...args], cwd: homedir() });
+    const terminal = vscode.window.createTerminal({ name, shellPath, shellArgs: [...args], cwd: homedir(), ...loginTerminalEnv(shellPath) });
     terminal.show();
     this.log.info(`opened "${name}" terminal: ${provider.loginCommand}`);
   }
@@ -1044,6 +1044,15 @@ export class ReviewController implements vscode.Disposable {
 
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * A login terminal's PATH with the CLI's own folder added (withCommandDir), as for every run: an
+ * npm-installed CLI set by its full path (because PATH lacks its folder) then finds its `node`.
+ */
+function loginTerminalEnv(shellPath: string): { env?: Record<string, string> } {
+  const env = withCommandDir(process.env, shellPath);
+  return env !== process.env && env.PATH !== undefined ? { env: { PATH: env.PATH } } : {};
 }
 
 /** Head-revision reader for validation, confined to the repo. */

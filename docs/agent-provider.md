@@ -32,7 +32,13 @@ checked out. A bare `claude` (or `codex`, `git`, `gh`) is looked up by Filos on 
 entries and spawned by its absolute path, on every OS (`resolveCommand`): an empty or relative PATH
 entry (`/usr/bin:/bin:`, `.`) resolves against the cwd, the repo under review, so a `claude` committed
 there would run instead. Every child also gets PATH without such entries (`absolutePathEnv`), so the
-`#!/usr/bin/env node` line of an npm-installed CLI can't find a `node` in the repo either. The PR prompt goes on **stdin**: there is no argv size limit, and the diff doesn't appear
+`#!/usr/bin/env node` line of an npm-installed CLI can't find a `node` in the repo either. When the
+executable is an absolute path whose folder isn't on PATH (say `filos.claude.path` is
+`/opt/homebrew/bin/claude` because VS Code was started from the macOS Dock without the shell's PATH),
+that folder is appended to the child's PATH (`withCommandDir`), so the script finds the `node` it was
+installed with; the login terminals get the same. A `notInstalled` message for a bare name also says
+where the CLI is when it sits in a usual install folder that PATH misses (`~/.local/bin`,
+`/opt/homebrew/bin`, `/usr/local/bin`, nvm, …; `offPathHint`), without ever running it. The PR prompt goes on **stdin**: there is no argv size limit, and the diff doesn't appear
 in the process list. (`promptVia: 'argv'` puts it after `--` instead; both are covered by tests.)
 
 ```
@@ -190,6 +196,9 @@ path. The executable is the codex binary itself, found by `locateCodex` (`codexI
 is looked up on absolute PATH entries only, and an npm launcher (`bin/codex.js`, or `codex.cmd` /
 `codex.ps1` on Windows, which spawn can't start without a shell) is followed to the binary it starts,
 `…/@openai/codex-<os>-<arch>/vendor/<triple>/bin/codex[.exe]`, found the way the launcher finds it.
+On macOS, when only the other architecture's package is installed (VS Code's Intel build under Rosetta
+on Apple silicon, with Codex installed by an arm64 Node), that one is used. The folder granted to the
+sandbox is the binary's real path, since Seatbelt matches resolved paths (pnpm links the package in).
 Every run, in both config modes:
 
 ```
@@ -252,7 +261,11 @@ stand-in for the Responses API (no OpenAI call), including a user config that se
 `sandbox_mode = "danger-full-access"`: a file outside the repo, a symlink out of the repo and
 `~/.codex/auth.json` all read as "No such file or directory"; `nl -ba`, `rg` and `cat` in the repo
 work; `touch` fails ("Read-only file system"); a socket fails ("Operation not permitted"); `/proc`
-shows only the sandbox's own processes. macOS (Seatbelt) and Windows were not checked.
+shows only the sandbox's own processes. Windows was not checked. macOS (Seatbelt) is checked only by
+CI: `npm run probe:codex-sandbox` (`scripts/probe-codex-sandbox.ts`) runs `codex sandbox -P <profile>`
+with Filos's `sandboxConfig` and checks reads in and out of the repo, `auth.json`, writes and the
+network. It passes all 12 checks on Linux with codex-cli 0.160.0; CI's `codex-sandbox-macos` job runs
+it on macOS.
 
 ### Skills
 
@@ -494,6 +507,8 @@ user-level only, like the Claude settings. `filos.claude.maxBudgetUsd` doesn't a
   `test/fixtures/fake-codex` in every mode (see its README), including a repo that ships a skill and
   mentions it, a `codex` and a `node` committed to the repo with relative PATH entries, the login
   check's inconclusive answers, and a slow or cancelled features listing.
+- `npm run probe:codex-sandbox` checks the permission profile with the installed codex (no login, no
+  model call); see "Sandbox".
 - `npx tsx scripts/smoke-codex.ts` runs one real comprehension pass over the fixture repo, then one
   `evaluateAnswer` and one `threadReply`, with the default config mode and model, and prints
   durations, tokens, commands, warnings and the replies. `--expect-model-error <model>` adds one

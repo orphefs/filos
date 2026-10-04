@@ -163,6 +163,7 @@
     "package": "npm run build && vsce package --no-dependencies -o dist/filos.vsix",
     "test:e2e:vsix": "npm run package && node dist/test/runE2E.js --vsix dist/filos.vsix",
     "smoke:claude": "tsx scripts/smoke-claude.ts --model sonnet --budget 0.5",
+    "probe:codex-sandbox": "tsx scripts/probe-codex-sandbox.ts",
     "package:pre-release": "npm run build && vsce package --pre-release --no-dependencies -o dist/filos.vsix",
     "publish:pre-release": "npm run build && vsce publish --pre-release --no-dependencies"
   },

@@ -1,0 +1,154 @@
+# Tests on Linux and macOS, builds the .vsix, and checks on macOS (and Linux, for comparison) that
+# the permission profile Filos gives Codex really confines it. Nothing here logs in to an agent CLI
+# or calls a model: the e2e suite runs fake claude, codex and gh CLIs, and the sandbox probe runs
+# `codex sandbox`, which needs no login.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      # Empty: the e2e suite runs the current stable VS Code. A version (such as 1.108.2) pins it.
+      FILOS_E2E_VSCODE_VERSION: ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test:unit
+      - run: npm run validate:fixture
+      - run: npm run validate:questions
+
+      # @vscode/test-electron downloads VS Code into .vscode-test/vscode-<platform>-<version>. The
+      # cache is keyed by that version, so a new release downloads once and is cached afresh.
+      - name: Find the VS Code version to test
+        id: vscode
+        run: |
+          version="$FILOS_E2E_VSCODE_VERSION"
+          [ -n "$version" ] || version=$(node -e "fetch('https://update.code.visualstudio.com/api/releases/stable?released=true', { signal: AbortSignal.timeout(15000) }).then((r) => r.json()).then((v) => console.log(Array.isArray(v) && v[0] ? v[0] : 'unknown'), () => console.log('unknown'))")
+          echo "VS Code: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Cache VS Code for the e2e tests
+        uses: actions/cache@v4
+        with:
+          path: .vscode-test/vscode-*
+          key: vscode-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.vscode.outputs.version }}
+
+      # On Linux the e2e runner re-executes itself under xvfb-run; on macOS VS Code opens on the
+      # runner's own display.
+      - name: Install Xvfb
+        if: runner.os == 'Linux'
+        run: command -v xvfb-run || { sudo apt-get update && sudo apt-get install -y xvfb; }
+
+      # The e2e suite clicks inside the VS Code window, whose size follows the display's; the suite
+      # logs the window size too.
+      - name: Show the display
+        if: runner.os == 'macOS'
+        run: system_profiler SPDisplaysDataType | grep -iE 'resolution|display type' || true
+
+      - name: End-to-end tests (real VS Code, fake CLIs)
+        run: npm run test:e2e
+
+      - name: Package
+        run: npm run package
+
+      - name: Upload the extension package
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: filos-vsix
+          path: dist/filos.vsix
+          if-no-files-found: error
+
+      - name: Upload e2e screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-shots-${{ matrix.os }}
+          path: .vscode-test/e2e-shots
+          if-no-files-found: ignore
+
+  # Filos confines Codex with its own permission profile: commands may read the repository and
+  # Codex's own files, nothing else; no writes, no network. It was checked on Linux (bubblewrap);
+  # this checks it on macOS (Seatbelt) with the current Codex CLI.
+  codex-sandbox-macos:
+    name: Codex sandbox (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install the Codex CLI
+        run: npm install -g @openai/codex && codex --version
+
+      # --decoy-auth: the runner has no Codex login, so a stand-in auth.json shows whether the login file is readable.
+      - name: Probe the sandbox
+        run: npm run probe:codex-sandbox -- --decoy-auth
+
+  # The same probe on Linux, for comparison.
+  codex-sandbox-linux:
+    name: Codex sandbox (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install the Codex CLI
+        run: npm install -g @openai/codex && codex --version
+
+      # Codex's Linux sandbox is bubblewrap (the system's bwrap if there is one, else its own), which
+      # needs unprivileged user namespaces. Ubuntu 24.04 restricts them through AppArmor unless a
+      # profile lets a program through, so the restriction is lifted here to test Filos's profile
+      # itself. If the sandbox still can't start, the probe says so and skips instead of failing.
+      - name: Allow user namespaces for bubblewrap
+        run: |
+          echo "bwrap: $(command -v bwrap || echo 'not installed (Codex uses its own)')"
+          sysctl kernel.apparmor_restrict_unprivileged_userns || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Probe the sandbox
+        run: npm run probe:codex-sandbox -- --decoy-auth --skip-if-unavailable

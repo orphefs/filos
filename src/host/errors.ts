@@ -2,6 +2,7 @@
 // the actions that can actually fix it. Kept free of vscode imports so it stays easy to test.
 
 import type { ProviderConfig } from '../agent';
+import { offPathHint } from '../agent/exec';
 import { ProviderError, type AgentProvider } from '../agent/provider';
 import type { ErrorAction } from '../protocol';
 
@@ -51,7 +52,7 @@ export function describeAgentError(e: unknown, ctx: ErrorContext): ErrorView {
       return {
         message: `Filos can't find the ${ctx.providerName} CLI.`,
         detail: join(
-          `Filos runs the ${ctx.providerName} CLI so the review uses your existing login. Install it, or set the setting "${ctx.pathSetting}" to the full path of the executable (it is "${ctx.executable}" now).`,
+          `Filos runs the ${ctx.providerName} CLI so the review uses your existing login. Install it, or set the setting "${ctx.pathSetting}" to the full path of the executable (it is "${ctx.executable}" now).${offPathHint(ctx.executable, ctx.pathSetting)}`,
           raw,
         ),
         // Another CLI may be installed already (Claude Code or Codex): one click switches to it.

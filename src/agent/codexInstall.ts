@@ -88,7 +88,9 @@ export function locateCodex(codexPath: string, o: InstallLookup = {}): CodexInst
   if (packageRoot === undefined) return { command: found, readable: [vendorDirOf(target, p) ?? target] };
 
   const exe = vendorExecutable(packageRoot, { ...o, platform, exists, readText: o.readText ?? readText });
-  if (exe) return { command: exe, readable: [vendorDirOf(exe, p) ?? exe] };
+  // By its real path: a sandbox profile grants real paths (macOS's Seatbelt matches the resolved
+  // path, so a symlinked folder would grant nothing), and pnpm links the platform package in.
+  if (exe) return { command: exe, readable: [vendorDirOf(real(exe), p) ?? real(exe)] };
   // A launcher without its executable: codex.js would fail too ("Missing optional dependency").
   // A .cmd can't be started at all; a codex.js can, and then reports that itself.
   return platform === 'win32' && ext !== '.js' && ext !== '.mjs' && ext !== '.cjs' ? undefined : { command: found, readable: [] };
@@ -104,12 +106,17 @@ function vendorDirOf(exe: string, p: typeof posix): string | undefined {
 /**
  * The codex executable of the npm package at `packageRoot`, found the way its launcher finds it:
  * the platform package by Node's module lookup from the package's bin folder, else the package's
- * own vendor folder.
+ * own vendor folder. On macOS, then the same for the other architecture.
  */
 function vendorExecutable(packageRoot: string, o: InstallLookup & { platform: NodeJS.Platform; exists: (f: string) => boolean; readText: (f: string) => string | undefined }): string | undefined {
   const p = o.platform === 'win32' ? win32 : posix;
-  const triple = TRIPLES[o.platform]?.[o.arch ?? process.arch];
+  const arch = o.arch ?? process.arch;
+  const triple = TRIPLES[o.platform]?.[arch];
   if (!triple) return undefined;
+  // macOS runs either architecture's binary (Rosetta): VS Code's Intel build on Apple silicon sees
+  // x64, while the arm64 Node that installed Codex fetched only the arm64 package, which is what
+  // its launcher would start. This process's architecture first, the other when it is all there is.
+  const other = o.platform === 'darwin' ? TRIPLES.darwin[arch === 'arm64' ? 'x64' : 'arm64'] : undefined;
   const name = (() => {
     try {
       return (JSON.parse(o.readText(p.join(packageRoot, 'package.json')) ?? '{}') as { name?: unknown }).name;
@@ -119,15 +126,17 @@ function vendorExecutable(packageRoot: string, o: InstallLookup & { platform: No
   })();
   if (name !== '@openai/codex') return undefined;
   const exeName = o.platform === 'win32' ? 'codex.exe' : 'codex';
-  const tail = ['vendor', triple, 'bin', exeName];
   const candidates: string[] = [];
-  // require.resolve('@openai/codex-<os>-<arch>/package.json') from <packageRoot>/bin.
-  for (let dir = p.join(packageRoot, 'bin'); ; dir = p.dirname(dir)) {
-    const modules = p.basename(dir) === 'node_modules' ? dir : p.join(dir, 'node_modules');
-    candidates.push(p.join(modules, '@openai', PLATFORM_PACKAGE[triple], ...tail));
-    if (p.dirname(dir) === dir) break;
+  for (const t of other ? [triple, other] : [triple]) {
+    const tail = ['vendor', t, 'bin', exeName];
+    // require.resolve('@openai/codex-<os>-<arch>/package.json') from <packageRoot>/bin.
+    for (let dir = p.join(packageRoot, 'bin'); ; dir = p.dirname(dir)) {
+      const modules = p.basename(dir) === 'node_modules' ? dir : p.join(dir, 'node_modules');
+      candidates.push(p.join(modules, '@openai', PLATFORM_PACKAGE[t], ...tail));
+      if (p.dirname(dir) === dir) break;
+    }
+    candidates.push(p.join(packageRoot, ...tail));
   }
-  candidates.push(p.join(packageRoot, ...tail));
   return candidates.find((c) => o.exists(c));
 }
 

@@ -6,6 +6,23 @@
 
 ![The graph of a pull request beside its code, with the risky function highlighted](media/screenshots/graph-and-code.png)
 
+## Install
+
+Filos isn't on the VS Code Marketplace yet. You install it from a file:
+
+1. Download `filos-0.1.0.vsix` from the [Releases page](https://github.com/orphefs/philos/releases).
+2. In VS Code, open the Command Palette, run **Extensions: Install from VSIX…** and pick the file.
+
+   Or, in a terminal: `code --install-extension filos-0.1.0.vsix`. On macOS, run **Shell Command: Install 'code' command in PATH** in VS Code once first, so that `code` exists.
+
+You also need:
+
+- VS Code 1.100 or later, on Linux or macOS. Windows is untested.
+- An agent CLI, installed and logged in: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`) or the [Codex CLI](https://github.com/openai/codex) (`codex`).
+- For pull requests and posting: the [GitHub CLI](https://cli.github.com) (`gh`), logged in with `gh auth login`, and `git`. On macOS, `git` comes with Apple's Command Line Tools: run `xcode-select --install` if you don't have them.
+
+**On macOS,** if Filos says it can't find `claude`, `codex` or `gh`, VS Code may not have your terminal's PATH. This can happen when VS Code is started from the Dock and the CLI lives in Homebrew's folder or `~/.local/bin`. When the CLI is in one of the usual install folders, Filos's message names its path. Otherwise, run `which claude` (or `codex`, or `gh`) in Terminal. Then put the full path in your **user** settings: `filos.claude.path`, `filos.codex.path` or `filos.gh.path`. For example, `/opt/homebrew/bin/gh` or `~/.local/bin/claude`.
+
 ## How it works
 
 1. **Point Filos at a pull request.** Run **Filos: Review Pull Request…**, then pick one of the workspace repository's open pull requests or paste a URL. Filos clones the code into its own storage, never into your workspace.
@@ -27,17 +44,20 @@
 
 ![A drafted comment, with Accept, Reject, Amend and Discuss](media/screenshots/comments.png)
 
-## Requirements
+## Trying it out
 
-- VS Code 1.100 or later.
-- An agent CLI, installed and logged in: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`) or the [Codex CLI](https://github.com/openai/codex) (`codex`).
-- For pull requests and posting: the [GitHub CLI](https://cli.github.com) (`gh`), logged in, and `git`.
+A good first session:
 
-## Getting started
+1. **The sample.** Run **Filos: Review Sample PR (bundled example)**. It opens a hand-written review of a small pull request: no agent, no cost. Click around the graph, answer a few questions, and switch between **Fast** and **Didactic** at the top.
+2. **Your agent.** Run **Filos: Choose Agent CLI…** to pick Claude Code or Codex. It shows whether each is installed and logged in.
+3. **One real pull request of your own.** Run **Filos: Review Pull Request…** on one you would review anyway, ideally in code you know. Try Fast, Didactic, or both.
+4. **One comment thread.** On a drafted comment, click **Discuss** and push back on it.
 
-1. Run **Filos: Review Sample PR (bundled example)**. It opens a hand-written sample review: no agent, no cost.
-2. Run **Filos: Choose Agent CLI…** to pick Claude Code or Codex. It shows whether each is installed and logged in.
-3. Run **Filos: Review Pull Request…** on a real pull request.
+You don't have to post anything. Filos posts only after you confirm, and **Export as Markdown** copies the review instead.
+
+On a 14-file pull request, getting the graph and the questions ready took about 10 minutes with Claude Code and cost about $1.50. With Codex it took about 5 minutes. You can explore the graph while the questions are being written. See [Cost and time](#cost-and-time).
+
+**Please tell me how it went.** [Open a Feedback issue](https://github.com/orphefs/philos/issues/new?template=feedback.yml): what helped, what confused or annoyed you, and anything that looked wrong. If something broke, [report a bug](https://github.com/orphefs/philos/issues/new?template=bug.yml) with the log from **View › Output › Filos**. Issues are public, so leave out private code.
 
 ## Commands
 
@@ -72,7 +92,7 @@ Filos reads these from your user settings only. A repository's `.vscode/settings
 Filos runs your own agent CLI, so it uses your plan or API account.
 
 - **Claude Code** (Sonnet): on a 14-file pull request, reading the change took about 5 minutes and cost about $0.90, and writing the questions took about 4 minutes and $0.60. A graded answer or a comment thread costs a few cents. `filos.claude.maxBudgetUsd` caps each call.
-- **Codex** reports no dollar cost; runs count against your Codex plan's limits.
+- **Codex** reports no dollar cost; runs count against your Codex plan's limits. On the same pull request (Codex's default model, ChatGPT account), reading the change took about 3 minutes and writing the questions about 1.5 minutes.
 - You can explore the graph while the questions are being written. The bundled sample costs nothing.
 
 ## Privacy and security
@@ -90,7 +110,8 @@ Filos runs your own agent CLI, so it uses your plan or API account.
 ## Known limitations
 
 - Pull requests are supported on GitHub only (GitHub Enterprise through the pull request's URL).
-- The Codex sandbox has been verified on Linux; macOS and Windows are untested.
+- Filos is tested on Linux, and on macOS by automated tests with stand-in agent CLIs. Windows is untested.
+- The Codex sandbox, which confines Codex to reading the code under review, has been checked on Linux only. On macOS it relies on Codex's own sandbox (Seatbelt) applying Filos's settings, which hasn't been checked yet.
 - The graph, questions and comments come from a language model. Check them against the code, as Filos asks you to.
 
 ## Building from source

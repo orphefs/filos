@@ -72,10 +72,19 @@ export function migrateStored(key: string, from: vscode.Memento, to: vscode.Meme
   }
 }
 
-/** Case-insensitive file systems need case-insensitive lookups. */
-export function fileKey(fsPath: string): string {
+/**
+ * The entry for a file in a map keyed by normalised absolute paths: by its exact path, else, where
+ * file systems are usually case-insensitive (macOS, Windows), by the same path in another case (a
+ * drive letter VS Code lower-cased, an editor opened through a differently cased path). Exact
+ * first, because macOS volumes can be case-sensitive too: there Foo.ts and foo.ts are two files.
+ */
+export function entryForPath<T>(map: ReadonlyMap<string, T>, fsPath: string, platform: NodeJS.Platform = process.platform): T | undefined {
   const p = normalize(fsPath);
-  return process.platform === 'win32' || process.platform === 'darwin' ? p.toLowerCase() : p;
+  const exact = map.get(p);
+  if (exact !== undefined || (platform !== 'win32' && platform !== 'darwin')) return exact;
+  const lower = p.toLowerCase();
+  for (const [k, v] of map) if (k.toLowerCase() === lower) return v;
+  return undefined;
 }
 
 export class ReviewSession {
@@ -178,7 +187,7 @@ export class ReviewSession {
       list.push(n);
       this.children.set(n.parent, list);
     }
-    this.outlines = new Map(graph.files.map((f) => [fileKey(this.absPath(f.path)), f] as const));
+    this.outlines = new Map(graph.files.map((f) => [normalize(this.absPath(f.path)), f] as const));
     // A re-run may rename or drop nodes; keep only what still exists.
     const known = (id: string) => this.nodes.has(id);
     this.state = {
@@ -247,6 +256,6 @@ export class ReviewSession {
 
   outlineFor(uri: vscode.Uri): FileOutline | undefined {
     const p = this.code.path(uri);
-    return p === undefined ? undefined : this.outlines.get(fileKey(p));
+    return p === undefined ? undefined : entryForPath(this.outlines, p);
   }
 }

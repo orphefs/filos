@@ -1,0 +1,67 @@
+name: Bug report
+description: Something in Filos broke or did the wrong thing.
+title: "Bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting it. This issue is public, so leave out private code, repository names and company details.
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Ran Filos: Review Pull Request…
+        2. Clicked …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: Include the error message, if there was one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Filos log
+      description: |
+        In VS Code, open View › Output and pick **Filos** in the Output panel's drop-down. Copy the lines around the problem.
+        The log names repositories, pull requests and file paths, and errors can quote the agent's output. Remove anything private first.
+      render: text
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: e.g. macOS 15.5 (Apple silicon), Ubuntu 24.04
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: VS Code and Filos versions
+      description: "`code --version`, or Help › About (on macOS: Code › About Visual Studio Code). Filos's version is on its page in the Extensions view."
+      placeholder: e.g. VS Code 1.104.2, Filos 0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: cli-versions
+    attributes:
+      label: Agent CLI and gh versions
+      description: "`claude --version` or `codex --version`, and `gh --version`."
+      placeholder: e.g. claude 2.1.276, gh 2.62.0

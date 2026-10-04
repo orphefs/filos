@@ -74,11 +74,25 @@ export async function git(cwd: string, args: readonly string[], opts: GitOptions
   if (r.timedOut) throw new GitError(`git ${sub} didn't finish within ${Math.round((opts.timeoutMs ?? 0) / 1000)} seconds`, stderr, TIMED_OUT);
   if (r.overflow) throw new GitError(`git ${sub} printed more than ${Math.round(maxBuffer / MiB)} MB`, '', OUTPUT_TOO_LARGE);
   if (r.exitCode !== 0) {
+    if (missingDeveloperTools(stderr)) throw new GitError(DEVELOPER_TOOLS_MESSAGE, stderr, GIT_NOT_FOUND);
     const how = r.exitCode === null ? `signal ${r.signal ?? '?'}` : `exit code ${r.exitCode}`;
     throw new GitError(`git ${sub} failed: ${stderr.trim() || how}`, stderr, r.exitCode ?? r.signal ?? undefined);
   }
   return r.stdout;
 }
+
+/**
+ * Whether git's stderr says it can't run because Apple's Command Line Tools are missing: macOS's
+ * /usr/bin/git is only a stub until they are installed ("xcrun: error: invalid active developer
+ * path (/Library/Developer/CommandLineTools), missing xcrun at: …"), and macOS offers to install
+ * them. Read as git not being installed, not as a failed command ("not a git repository").
+ */
+export function missingDeveloperTools(stderr: string): boolean {
+  return /xcrun: error: invalid active developer path|no developer tools were found|requires the command line developer tools/i.test(stderr);
+}
+
+export const DEVELOPER_TOOLS_MESSAGE =
+  'git on this Mac needs Apple\'s Command Line Tools, which aren\'t installed. Install them (macOS may be offering to already, or run "xcode-select --install" in a terminal), then retry.';
 
 /** The git command in args, past global options such as "-c key=value". For messages. */
 function subcommand(args: readonly string[]): string {

@@ -12,7 +12,7 @@ import { AGENT_TASKS, taskMarker } from './claudeCli';
 import { addUsage, classifyCodexFailure, eventError, eventItem, forbiddenItem, jsonFromText, parseEvent, progressForEvent, type CodexEvent } from './codexEvents';
 import { locateCodex, type CodexInstall } from './codexInstall';
 import { fromCodexAnswer, toCodexSchema } from './codexSchema';
-import { runProcess, scrubEnv, type RunResult } from './exec';
+import { offPathHint, runProcess, scrubEnv, type RunResult } from './exec';
 import { safeProgressText } from './progress';
 import { buildPrompt } from './prompt';
 import { ProviderError, type AgentProvider, type AgentTask, type AskRequest, type AskResult, type ComprehensionRequest, type ComprehensionResult, type TokenUsage } from './provider';
@@ -485,7 +485,8 @@ export class CodexCliProvider implements AgentProvider {
       process.platform === 'win32'
         ? " On Windows, Filos starts Codex's codex.exe, not the codex.cmd npm installs: if Filos can't find it, set filos.codex.path to it (with npm it is under %APPDATA%\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin)."
         : '';
-    return new ProviderError('notInstalled', `Codex CLI not found at "${this.opts.codexPath}". Install it (npm install -g @openai/codex), or set filos.codex.path.${windows}`, detail);
+    const hint = offPathHint(this.opts.codexPath, 'filos.codex.path', { env: this.env() });
+    return new ProviderError('notInstalled', `Codex CLI not found at "${this.opts.codexPath}". Install it (npm install -g @openai/codex), or set filos.codex.path.${windows}${hint}`, detail);
   }
 
   /**

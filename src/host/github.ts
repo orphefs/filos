@@ -4,7 +4,7 @@
 // first. No vscode import, so unit tests drive it with the fake gh in test/fixtures/fake-gh.
 
 import { statSync } from 'node:fs';
-import { runProcess, type RunResult } from '../agent/exec';
+import { offPathHint, runProcess, type RunResult } from '../agent/exec';
 import { safeProgressText } from '../agent/progress';
 import { buildGithubReview, type GithubReview, type GithubReviewComment } from '../review/github';
 import type { DraftComment, PostTarget } from '../review/types';
@@ -119,7 +119,7 @@ export function ghFailure(r: RunResult, what: string, ghPath: string, timeoutMs 
   const stderr = r.stderrTail.trim();
   const detail = [stderr, r.stdout.trim()].filter(Boolean).join('\n').slice(-4000);
   if (r.spawnError) {
-    if (r.spawnError.code === 'ENOENT') return new GhError(`Filos can't find the GitHub CLI ("${safeProgressText(ghPath, 120)}"). Install gh and run "gh auth login", or set "filos.gh.path".`, 'notInstalled');
+    if (r.spawnError.code === 'ENOENT') return new GhError(`Filos can't find the GitHub CLI ("${safeProgressText(ghPath, 120)}"). Install gh and run "gh auth login", or set "filos.gh.path".${offPathHint(ghPath, 'filos.gh.path')}`, 'notInstalled');
     return new GhError(`Filos couldn't start the GitHub CLI: ${safeProgressText(r.spawnError.message, 160)}`, 'failed');
   }
   if (r.aborted) return new GhError(`Cancelled while ${what}.`, 'cancelled');

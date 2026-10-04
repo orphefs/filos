@@ -2,9 +2,11 @@
 // Agent CLIs run for minutes and may start helper processes, so we kill the whole process group.
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { accessSync, constants as fsConstants, statSync } from 'node:fs';
+import { accessSync, constants as fsConstants, readdirSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { posix, win32 } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { safeProgressText } from './progress';
 
 export interface RunOptions {
   command: string;
@@ -131,6 +133,95 @@ export function absolutePathEnv(env: NodeJS.ProcessEnv, platform: NodeJS.Platfor
   return kept.length === entries.length ? env : { ...env, [key]: kept.join(sep) };
 }
 
+/**
+ * `env` with the folder of `command` (an absolute path) appended to PATH when PATH lacks it. An
+ * npm-installed CLI is a `#!/usr/bin/env node` script, and the `node` it was installed with sits in
+ * the same folder (/opt/homebrew/bin, ~/.nvm/versions/node/<v>/bin). When filos.claude.path names
+ * it because that folder isn't on the PATH VS Code started with (macOS, started from the Dock with
+ * a shell setup VS Code didn't read), env wouldn't find node either, and the CLI would fail with
+ * "env: node: No such file or directory". Appended, so every folder already on PATH comes first.
+ * POSIX only: Windows starts .exe files, not scripts. Returns `env` itself when nothing changes.
+ */
+export function withCommandDir(env: NodeJS.ProcessEnv, command: string, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
+  if (platform === 'win32' || !posix.isAbsolute(command)) return env;
+  const dir = posix.dirname(command);
+  const path = env.PATH ?? DEFAULT_POSIX_PATH;
+  if (path.split(':').includes(dir)) return env;
+  return { ...env, PATH: path ? `${path}:${dir}` : dir };
+}
+
+/**
+ * Folders where installers put CLIs that the PATH VS Code started with may lack, in the order
+ * they are tried: Claude Code's installer (~/.local/bin, the older ~/.claude/local), Homebrew on
+ * Apple silicon and Intel Macs (and Linux), npm prefixes, nvm's newest Node, Volta, Bun, snap.
+ */
+function commonInstallDirs(home: string, readDir: (dir: string) => string[]): string[] {
+  const nvm = posix.join(home, '.nvm', 'versions', 'node');
+  const nvmBins = readDir(nvm)
+    .filter((v) => /^v\d/.test(v))
+    .sort((a, b) => b.localeCompare(a, 'en', { numeric: true }))
+    .map((v) => posix.join(nvm, v, 'bin'));
+  return [
+    posix.join(home, '.local', 'bin'),
+    posix.join(home, '.claude', 'local'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/home/linuxbrew/.linuxbrew/bin',
+    posix.join(home, '.npm-global', 'bin'),
+    ...nvmBins,
+    posix.join(home, '.volta', 'bin'),
+    posix.join(home, '.bun', 'bin'),
+    '/snap/bin',
+  ];
+}
+
+export interface OffPathLookup extends CommandLookup {
+  /** The home folder (default: env.HOME, else the OS's). */
+  home?: string;
+  /** A folder's entries, or [] (default: readdirSync). */
+  readDir?: (dir: string) => string[];
+}
+
+/**
+ * Where a command named without a folder is installed although PATH doesn't lead to it: the first
+ * executable `name` in a common install folder (commonInstallDirs) that isn't on PATH, else
+ * undefined. For "not found" messages only: Filos never runs what this finds unless the user sets
+ * the path. POSIX only.
+ */
+export function foundOffPath(name: string, o: OffPathLookup = {}): string | undefined {
+  const env = o.env ?? process.env;
+  if ((o.platform ?? process.platform) === 'win32' || !name || name.includes('/')) return undefined;
+  const home = o.home ?? env.HOME ?? homedir();
+  if (!posix.isAbsolute(home)) return undefined;
+  const onPath = new Set((env.PATH ?? DEFAULT_POSIX_PATH).split(':'));
+  const isExec = o.isFile ?? defaultIsExecutable;
+  const readDir = o.readDir ?? defaultReadDir;
+  for (const dir of commonInstallDirs(home, readDir)) {
+    if (onPath.has(dir)) continue;
+    const candidate = posix.join(dir, name);
+    if (isExec(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+/**
+ * A sentence for a "not found" message that names where `command` is installed when PATH misses
+ * it (foundOffPath), or '' when Filos knows of nowhere. The path goes through safeProgressText,
+ * like any text that may reach a notification (which would render [label](command:…) as a link).
+ */
+export function offPathHint(command: string, setting: string, o: OffPathLookup = {}): string {
+  const found = foundOffPath(command, o);
+  return found ? ` Filos found one at ${safeProgressText(found, 200)}, a folder that isn't on the PATH VS Code started with: set ${setting} to that path.` : '';
+}
+
+function defaultReadDir(dir: string): string[] {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
 function defaultIsFile(p: string): boolean {
   try {
     return statSync(p).isFile();
@@ -169,7 +260,7 @@ export function runProcess(o: RunOptions): Promise<RunResult> {
     try {
       child = spawn(command, [...o.args], {
         cwd: o.cwd,
-        env: absolutePathEnv(o.env ?? process.env),
+        env: withCommandDir(absolutePathEnv(o.env ?? process.env), command),
         stdio: ['pipe', 'pipe', 'pipe'],
         // Own process group on POSIX, so a kill reaches helpers the CLI started.
         detached: process.platform !== 'win32',

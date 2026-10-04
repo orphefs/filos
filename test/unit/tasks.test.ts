@@ -550,7 +550,7 @@ describe('task prompts', () => {
   });
 
   it('strips a copied severity/location header from proposals and drafted comments', () => {
-    const t = validateThreadReply({ reply: 'ok', proposal: 'Severity: blocking. Location: transaction_routes.py:86 and 93. Both lookups raise.' });
+    const t = validateThreadReply({ reply: 'ok', proposal: 'Severity: blocking. Location: handlers.py:86 and 93. Both lookups raise.' });
     assert.ok(t.ok);
     if (t.ok) {
       assert.equal(t.value.proposal, 'Both lookups raise.');

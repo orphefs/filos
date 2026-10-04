@@ -146,13 +146,13 @@ Specified in `docs/review-and-didactic.md`; question contract in `docs/questions
 
 PR files open read-only through a `filos-pr:` file system, never as `file:` URIs. That means other extensions and VS Code's Git integration never treat PR content as workspace code.
 
-It was verified live on orphefs/parkfinder#9 (2026-10-03, Sonnet):
+It was verified live on a private 14-file PR (2026-10-03, Sonnet):
 - comprehension: 312 s, $0.86
 - questions: 254 s, $0.60
 - each graded answer or thread reply: about $0.05 and 8–15 s
 - a 2-comment review was posted for real, with explicit approval.
 
-With Codex (default model on a ChatGPT account, 2026-10-04):
+On the same PR with Codex (default model on a ChatGPT account, 2026-10-04):
 - comprehension: 179 s, about 159k tokens in (117k cached) and 5k out
 - questions: 81 s
 - grading, drafting and threads: about 6–7 s each
@@ -178,6 +178,7 @@ Open question from that run: the agent's orientation and Socrates (which follows
 - **Package:** a listing README with screenshots, an icon (`media/icon.png`, drawn as `media/icon.svg`), a CHANGELOG, and `npm run publish:pre-release`.
 - **Steps for Orfeas:** in [docs/development.md](docs/development.md). Make the repo public and push first, so the listing images resolve.
 - **Not yet published.** The publisher account and its token are Orfeas's.
+- **Sharing with friends first (prepared 2026-10-05):** a v0.1.0 pre-release on GitHub Releases with the `.vsix` attached, installed with "Install from VSIX…". The README has Install and "Trying it out" sections, and feedback comes in through issue forms (`.github/ISSUE_TEMPLATE/`). Release steps are in [docs/development.md](docs/development.md).
 
 ## Build order (after UX is settled)
 

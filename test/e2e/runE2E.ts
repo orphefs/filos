@@ -4,15 +4,21 @@
 //   npm run test:e2e -- --grep fold  only tests whose title matches
 //   FILOS_E2E_KEEP=1                 keep the temporary profile and workspace for inspection
 //   FILOS_E2E_HEADED=1               run on the current display instead of a private Xvfb
+//   FILOS_E2E_DOWNLOAD=1             run the stable VS Code that @vscode/test-electron downloads,
+//                                    as CI does, even when one is installed at /usr/share/code
+//   FILOS_E2E_VSCODE_VERSION=1.108.2 download and run that VS Code version instead
 //   node dist/test/runE2E.js --vsix dist/filos.vsix
 //                                    run against the unpacked package instead of the repo, which
 //                                    proves the .vsix carries every file the extension needs
 //
 // On Linux it re-executes itself under `xvfb-run`, so VS Code never opens on the user's desktop.
+// On macOS (and Windows) there is no Xvfb: VS Code opens on the real display. A VS Code installed
+// at /usr/share/code is used when there is one (Linux); everywhere else @vscode/test-electron
+// downloads the current stable build into .vscode-test/.
 // VS Code also gets a scrubbed environment: no parent-session tokens, IPC hooks or session bus.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { delimiter, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -20,9 +26,19 @@ import { runTests } from '@vscode/test-electron';
 
 /** dist/test/runE2E.js -> repo root. */
 const ROOT = resolve(__dirname, '..', '..');
+/** The .deb/.rpm install on Linux. Anywhere else (or without it) test-electron downloads stable. */
 const INSTALLED_VSCODE = '/usr/share/code/code';
 const SCREEN = '1920x1080x24';
 
+/**
+ * Where the run's profile, extensions and workspace go. On macOS os.tmpdir() is a long
+ * /var/folders/… path, and VS Code puts its IPC socket inside --user-data-dir there, where a socket
+ * path can't be longer than 103 characters; /tmp keeps it short. The real path is used throughout
+ * (/tmp is /private/tmp there), so paths VS Code and git report match the ones the tests expect.
+ */
+function runParent(): string {
+  return process.platform === 'darwin' ? '/tmp' : tmpdir();
+}
 
 function onPath(cmd: string): boolean {
   return (process.env.PATH ?? '').split(delimiter).some((dir) => dir && existsSync(join(dir, cmd)));
@@ -136,7 +152,7 @@ async function main(): Promise<number> {
   const vsix = arg('--vsix');
   const keep = process.env.FILOS_E2E_KEEP === '1';
 
-  const run = mkdtempSync(join(tmpdir(), 'filos-e2e-'));
+  const run = realpathSync(mkdtempSync(join(runParent(), 'filos-e2e-')));
   const runtimeDir = join(run, 'xdg');
   mkdirSync(runtimeDir, { recursive: true });
   chmodSync(runtimeDir, 0o700);
@@ -162,11 +178,14 @@ async function main(): Promise<number> {
   scrubEnvironment(runtimeDir);
   const cdpPort = await freePort();
 
-  const vscodeExecutablePath = existsSync(INSTALLED_VSCODE) ? INSTALLED_VSCODE : undefined;
-  console.log(`Filos e2e: VS Code ${vscodeExecutablePath ?? '(downloaded)'} on DISPLAY=${process.env.DISPLAY ?? '(none)'}, extension ${extensionPath}, run dir ${run}`);
+  const version = process.env.FILOS_E2E_VSCODE_VERSION?.trim() || undefined;
+  const useInstalled = !version && process.platform === 'linux' && process.env.FILOS_E2E_DOWNLOAD !== '1' && existsSync(INSTALLED_VSCODE);
+  const vscodeExecutablePath = useInstalled ? INSTALLED_VSCODE : undefined;
+  console.log(`Filos e2e: VS Code ${vscodeExecutablePath ?? `${version ?? 'stable'} (downloaded)`} on DISPLAY=${process.env.DISPLAY ?? '(none)'}, extension ${extensionPath}, run dir ${run}`);
   try {
     await runTests({
       vscodeExecutablePath,
+      ...(version ? { version } : {}),
       extensionDevelopmentPath: extensionPath,
       extensionTestsPath: join(ROOT, 'dist', 'test', 'suite.js'),
       extensionTestsEnv: {
@@ -200,8 +219,9 @@ async function main(): Promise<number> {
         '--skip-welcome',
         '--skip-release-notes',
         '--disable-gpu',
-        // Never touch the desktop keyring from a test profile.
+        // Never touch the desktop keyring from a test profile (the macOS Keychain included).
         '--password-store=basic',
+        ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
         `--remote-debugging-port=${cdpPort}`,
       ],
     });

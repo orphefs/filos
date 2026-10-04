@@ -1,0 +1,80 @@
+name: Feedback
+description: Tell me how a review with Filos went.
+title: "Feedback: "
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying Filos. Short answers are fine, and you can skip any question.
+        This issue is public, so leave out private code, repository names and company details.
+
+  - type: input
+    id: reviewed
+    attributes:
+      label: What did you review?
+      description: Roughly how big (files and lines changed) and the main language. "The bundled sample" is a fine answer.
+      placeholder: e.g. 12 files, about 400 lines, TypeScript
+    validations:
+      required: true
+
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent
+      options:
+        - Claude Code
+        - Codex
+        - Both
+        - Neither (sample only)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - Fast
+        - Didactic
+        - Both
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - macOS
+        - Linux
+        - Windows
+    validations:
+      required: true
+
+  - type: textarea
+    id: helped
+    attributes:
+      label: What helped?
+
+  - type: textarea
+    id: confused
+    attributes:
+      label: What confused or annoyed you?
+
+  - type: textarea
+    id: change-first
+    attributes:
+      label: What would you change first?
+
+  - type: textarea
+    id: wrong
+    attributes:
+      label: Did anything look wrong?
+      description: In the graph, the questions or the drafted comments. Say what it showed and what you expected.
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots (optional)
+      description: Drag images here. Crop out anything private.

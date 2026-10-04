@@ -20,7 +20,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, realpathSync, renameSync } from 'node:fs';
 import { lstat, readdir, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import { resolveCommand, runProcess, type RunResult } from '../agent/exec';
+import { offPathHint, resolveCommand, runProcess, type RunResult } from '../agent/exec';
 import { safeProgressText } from '../agent/progress';
 import { INVISIBLE } from '../agent/prompt';
 import { normaliseOriginUrl } from '../review/confidence';
@@ -321,12 +321,14 @@ export function lookupFailure(r: RunResult, ghPath: string, what: { label: strin
 }
 
 function ghMissing(ghPath: string): PrError {
-  return new PrError(`Filos can't find the GitHub CLI ("${safeProgressText(ghPath, 120)}"). Install gh and run "gh auth login", or set "filos.gh.path".`, 'ghNotInstalled');
+  return new PrError(`Filos can't find the GitHub CLI ("${safeProgressText(ghPath, 120)}"). Install gh and run "gh auth login", or set "filos.gh.path".${offPathHint(ghPath, 'filos.gh.path')}`, 'ghNotInstalled');
 }
 
 /** A clone or fetch failed (git's stderr, maybe through gh). `what` reads after "while". */
 export function transferFailure(stderr: string, what: string, pr: Pick<PullRequestDetails, 'host' | 'owner' | 'repo' | 'number' | 'baseRefName'>, detail = stderr): PrError {
   const name = `${pr.owner}/${pr.repo}`;
+  // gh clones with git: on a Mac without Apple's Command Line Tools, git is only a stub.
+  if (git.missingDeveloperTools(stderr)) return new PrError(git.DEVELOPER_TOOLS_MESSAGE, 'gitNotInstalled', detail);
   if (DISK.test(stderr)) return new PrError(`The disk is full, so Filos couldn't finish ${what}. Free some space (or run "Filos: Delete Pull Request Checkouts"), then retry.`, 'disk', detail);
   if (/couldn't find remote ref refs\/pull\//i.test(stderr)) return new PrError(`GitHub has no commits for ${prLabel(pr)} to fetch.`, 'notFound', detail);
   if (/couldn't find remote ref refs\/heads\//i.test(stderr)) {
@@ -350,7 +352,7 @@ function gitFailure(e: unknown, what: string, pr: PullRequestDetails): PrError {
   if (e instanceof git.GitError) {
     if (e.code === git.ABORTED) return new PrError('Cancelled.', 'cancelled');
     if (e.code === git.TIMED_OUT) return new PrError(`${e.message}, while ${what}. A very large repository can take longer: retry.`, 'timeout', e.stderr);
-    if (e.code === git.GIT_NOT_FOUND) return new PrError('Filos can\'t find git. Install it (and make sure it is on PATH), then retry.', 'gitNotInstalled');
+    if (e.code === git.GIT_NOT_FOUND) return new PrError(git.missingDeveloperTools(e.stderr) ? git.DEVELOPER_TOOLS_MESSAGE : 'Filos can\'t find git. Install it (and make sure it is on PATH), then retry.', 'gitNotInstalled', e.stderr || undefined);
     if (e.code === git.OUTPUT_TOO_LARGE) return new PrError(safeProgressText(e.message, 300), 'failed');
     return transferFailure(e.stderr || e.message, what, pr, e.stderr || e.message);
   }
